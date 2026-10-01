@@ -37,6 +37,7 @@ injected with `adb`; no real switch, mouse or TalkBack session was used.
 | Telemetry (tablet) | Merged Vision manifest has no `INTERNET` and no ONNX telemetry provider; no hosts lookups observed on the tablet |
 | Face tracking (tablet, with a person) | Face found at the sensor rotation; up to 38/38 frames with eyes at ~7 fps, software zoom ~1.5x. A sensor-crop zoom crashed the MT6768 camera HAL and was replaced |
 | Calibration data (tablet, with a person) | Horizontal eye position tracked the targets (r = 0.98, ~5% RMS); the lid-relative vertical feature had no signal (r = −0.05), so vertical now uses iris-to-corner position, blendshape look scores and lid opening per axis — not yet re-measured |
+| Lock and momentum (tablet, injected gaze) | Gaze injected into the gap between two phrase buttons locked onto the nearer one and the pointer settled at its centre; after a jump across the screen the pointer was mid-glide in the first frame and on target a second later |
 | Pointer, dwell and blink (tablet, injected gaze) | Debug-only `DEBUG_GAZE` broadcast: pointer drawn at the injected point; dwell typed the phrase under it; a 700 ms blink pressed the button under the pointer, a 200 ms blink did nothing |
 | CI | Native, Android Lite and Android Vision jobs pass |
 | Not tested | These fixes on the phone (including landscape on a short phone screen and HyperOS key handling), gaze accuracy and calibration with a person, the gaze pointer on screen, a 180° landscape flip, NNAPI, TalkBack/Switch Access, real switches, audio quality, long-run thermals |

@@ -32,6 +32,7 @@ import android.text.Editable;
 import android.text.InputFilter;
 import android.text.TextUtils;
 import android.text.TextWatcher;
+import android.view.Choreographer;
 import android.view.KeyEvent;
 import android.view.SoundEffectConstants;
 import android.view.MotionEvent;
@@ -79,14 +80,17 @@ public final class MainActivity extends Activity {
     private CalibrationTarget calibrationTarget;
     private boolean calibrationPositioning;
     private long calibrationTracked, calibrationMissing, calibrationTick;
-    private float[] easedGaze;
+    /** The button the pointer is locked onto, and the one it is settling on before locking. */
+    private Button lockedButton, lockCandidate;
+    private long lockCandidateSince, lockLeftSince;
+    private static final long LOCK_DELAY_MS = 120, UNLOCK_MS = 150;
     /** Head pose held when the face was first found; the uncalibrated pointer moves relative to it. */
     private final double[] neutralHead = new double[2];
     private int neutralSamples, restarts;
     /** Blink to select: a deliberate closure between blinkMillis and BLINK_MAX_MS presses what the pointer is on. */
     private boolean blinkSelect = true;
     private long blinkMillis = 600, closedSince;
-    private float[] blinkGaze;
+    private int blinkTarget = -1;
     private static final long BLINK_MAX_MS = 2500;
     private long restartWindow;
     private static final double HEAD_GAIN_X = 5, HEAD_GAIN_Y = 6;
@@ -224,7 +228,7 @@ public final class MainActivity extends Activity {
         // Rebuilding the views must not throw the user back to the top or close Settings.
         int keepScroll = scroll == null ? 0 : scroll.getScrollY();
         boolean keepSettings = settingsScroll != null && settingsScroll.getVisibility() == View.VISIBLE;
-        renders++; resetDwell(); clearScan(); buttons.clear(); groups.clear(); selected = null; pointerTarget = -1; scanIndex = -1; scanGroup = null; scanItems = null;
+        renders++; resetDwell(); clearScan(); buttons.clear(); groups.clear(); selected = null; lockedButton = null; lockCandidate = null; pointerTarget = -1; scanIndex = -1; scanGroup = null; scanItems = null;
         LinearLayout root = new LinearLayout(this); root.setOrientation(LinearLayout.VERTICAL); root.setPadding(dp(8),dp(6),dp(8),dp(4)); root.setBackgroundColor(contrast ? Color.BLACK : BG);root.setLayoutDirection(pack.rtl?View.LAYOUT_DIRECTION_RTL:View.LAYOUT_DIRECTION_LTR);
         root.setOnApplyWindowInsetsListener((v, insets) -> { v.setPadding(dp(8)+insets.getSystemWindowInsetLeft(), dp(6)+insets.getSystemWindowInsetTop(), dp(8)+insets.getSystemWindowInsetRight(), dp(4)+insets.getSystemWindowInsetBottom()); return insets; });
         android.content.res.Configuration config = getResources().getConfiguration();
@@ -432,14 +436,15 @@ public final class MainActivity extends Activity {
     /** Tracks eye closure; a deliberate blink presses what the pointer is on, or the scanned row/button. */
     private void blink(boolean closed,long time){
         if(!blinkSelect||calibrationIndex>=0){closedSince=0;return;}
-        if(closed){if(closedSince==0){closedSince=time;blinkGaze=easedGaze==null?null:easedGaze.clone();}return;}
+        // The eyes stop being tracked while closed, so remember the locked button from the moment they close.
+        if(closed){if(closedSince==0){closedSince=time;blinkTarget=lockedButton==null?-1:lockedButton.getId();}return;}
         if(closedSince==0)return;
         long held=time-closedSince;closedSince=0;
         // Natural blinks are shorter; closing the eyes to rest is longer. Neither presses anything.
         if(held<blinkMillis||held>BLINK_MAX_MS)return;
         Log.i(TAG,"Blink select after "+held+" ms");
         if(mode==2){if(paused)setPaused(false);else scanSelect();return;}
-        int target=gazeTarget(blinkGaze);
+        int target=blinkTarget;
         if(target<0||(paused&&target!=pauseButton.getId()))return;
         for(Button button:buttons)if(button.getId()==target&&button.isShown()){button.playSoundEffect(SoundEffectConstants.CLICK);blockedTarget=target;button.performClick();break;}
     }
@@ -673,12 +678,11 @@ public final class MainActivity extends Activity {
         long now=SystemClock.uptimeMillis();
         if(calibrationIndex>=0)calibrationStep(now);
         if(mode==2 && !paused && calibrationIndex<0 && now-lastScan>=scanMillis){scanStep();lastScan=now;}
-        // The pointer glides between the 5-10 Hz camera samples; targeting uses the same eased point.
         float[] looked=cameraTracker!=null?gazePoint(now):null;
-        if(looked==null)easedGaze=null;else if(easedGaze==null)easedGaze=looked;else{easedGaze[0]+=(looked[0]-easedGaze[0])*.35f;easedGaze[1]+=(looked[1]-easedGaze[1])*.35f;}
-        float[] gaze=easedGaze;
+        Button lock=updateLock(looked,now);
         if((mode==1 || mode==3) && calibrationIndex<0){
-            int target=mode==1?pointerTarget:gazeTarget(gaze);
+            // Gaze selects the locked button, so jitter inside or just outside it cannot reset the dwell.
+            int target=mode==1?pointerTarget:lock==null?-1:lock.getId();
             if(target!=blockedTarget)blockedTarget=-1;
             if(target==blockedTarget || (paused && target!=pauseButton.getId()))target=-1;
             Button next=null;for(Button b:buttons)if(b.getId()==target&&b.isShown()){next=b;break;}
@@ -689,7 +693,7 @@ public final class MainActivity extends Activity {
         }
         int progress=dwellState[0]<0?0:(int)Math.min(100,Math.max(0,(now-dwellState[1])*100/dwellMillis));
         if(selectionProgress!=null)selectionProgress.setProgress(progress);
-        if(pointer!=null)pointer.show(gaze,mode==3?progress/100f:0);
+        if(pointer!=null){if(looked==null)pointer.hide();else{float[] aim=lock!=null?centre(lock):looked;pointer.aim(aim[0],aim[1],lock!=null,mode==3?progress/100f:0);}}
         handler.postDelayed(this,mode==0&&calibrationIndex<0&&cameraTracker==null?250:50);
     }};
     private int displayRotation(){return getWindowManager().getDefaultDisplay().getRotation();}
@@ -702,6 +706,44 @@ public final class MainActivity extends Activity {
         sizeWarned=false;
         // gazeState already holds the calibrated, smoothed screen fraction.
         return new float[]{(float)(gazeState[0]*surface.getWidth()),(float)(gazeState[1]*surface.getHeight())};
+    }
+    /**
+     * Locks onto the button the pointer settles on (or just beside) for LOCK_DELAY_MS, and holds it until
+     * the gaze has been clearly outside it, past a margin, for UNLOCK_MS.
+     */
+    private Button updateLock(float[] looked,long now){
+        if(looked==null){lockedButton=null;lockCandidate=null;return null;}
+        if(lockedButton!=null&&(!lockedButton.isShown()||!near(lockedButton,looked))){
+            if(lockLeftSince==0)lockLeftSince=now;else if(now-lockLeftSince>=UNLOCK_MS)lockedButton=null;
+        }else lockLeftSince=0;
+        if(lockedButton!=null)return lockedButton;
+        Button over=nearestButton(looked);
+        if(over!=lockCandidate){lockCandidate=over;lockCandidateSince=now;}
+        else if(over!=null&&now-lockCandidateSince>=LOCK_DELAY_MS){lockedButton=over;lockLeftSince=0;}
+        return lockedButton;
+    }
+    private final Rect lockBounds=new Rect();
+    private final int[] surfaceOrigin=new int[2];
+    /** The button under the point, or the nearest one within a small snap radius (gaps between keys). */
+    private Button nearestButton(float[] point){
+        surface.getLocationOnScreen(surfaceOrigin);float x=point[0]+surfaceOrigin[0],y=point[1]+surfaceOrigin[1];
+        Button best=null;float bestDistance=dp(28);
+        for(Button button:buttons){
+            if(!button.isShown()||!button.getGlobalVisibleRect(lockBounds))continue;
+            float dx=Math.max(0,Math.max(lockBounds.left-x,x-lockBounds.right)),dy=Math.max(0,Math.max(lockBounds.top-y,y-lockBounds.bottom));
+            float distance=(float)Math.hypot(dx,dy);if(distance==0)return button;if(distance<bestDistance){bestDistance=distance;best=button;}
+        }
+        return best;
+    }
+    /** Inside the button grown by a quarter of its smaller side (at least 16 dp): leaving that unlocks. */
+    private boolean near(Button button,float[] point){
+        if(!button.getGlobalVisibleRect(lockBounds))return false;surface.getLocationOnScreen(surfaceOrigin);
+        int margin=Math.max(dp(16),Math.min(lockBounds.width(),lockBounds.height())/4);lockBounds.inset(-margin,-margin);
+        return lockBounds.contains((int)(point[0]+surfaceOrigin[0]),(int)(point[1]+surfaceOrigin[1]));
+    }
+    private float[] centre(Button button){
+        button.getGlobalVisibleRect(lockBounds);surface.getLocationOnScreen(surfaceOrigin);
+        return new float[]{lockBounds.exactCenterX()-surfaceOrigin[0],lockBounds.exactCenterY()-surfaceOrigin[1]};
     }
     private int gazeTarget(float[] gaze){
         if(gaze==null)return -1;
@@ -739,23 +781,43 @@ public final class MainActivity extends Activity {
         }
         @Override public boolean dispatchKeyEventPreIme(KeyEvent event){ return switchKey(event) || super.dispatchKeyEventPreIme(event); }
     }
-    /** The eye-tracking pointer: drawn where the user looks, with dwell progress as a ring. */
-    private final class GazePointer extends View {
+    /**
+     * The eye-tracking pointer. It moves as a damped spring toward where the user looks (or the centre of
+     * the locked button), so it has momentum: it accelerates, glides and settles instead of jumping.
+     */
+    private final class GazePointer extends View implements Choreographer.FrameCallback {
         private final Paint fill=new Paint(Paint.ANTI_ALIAS_FLAG), ring=new Paint(Paint.ANTI_ALIAS_FLAG), arc=new Paint(Paint.ANTI_ALIAS_FLAG);
         private final RectF bounds=new RectF();
-        private float progress;
+        private float progress,x,y,vx,vy,aimX,aimY;
+        private boolean placed,animating,locked;
+        private long lastFrame;
         GazePointer(){
             super(MainActivity.this);setVisibility(View.GONE);setImportantForAccessibility(View.IMPORTANT_FOR_ACCESSIBILITY_NO);
             fill.setColor(Color.argb(90,255,221,133));
             ring.setStyle(Paint.Style.STROKE);ring.setStrokeWidth(dp(3));ring.setColor(SCAN);
             arc.setStyle(Paint.Style.STROKE);arc.setStrokeWidth(dp(5));arc.setStrokeCap(Paint.Cap.ROUND);arc.setColor(ACCENT);
         }
-        void show(float[] gaze,float dwell){
-            int wanted=gaze==null?View.GONE:View.VISIBLE;if(getVisibility()!=wanted)setVisibility(wanted);
-            if(gaze==null)return;
-            setTranslationX(gaze[0]-getWidth()/2f);setTranslationY(gaze[1]-getHeight()/2f);
-            if(dwell!=progress){progress=dwell;invalidate();}
+        void aim(float targetX,float targetY,boolean lock,float dwell){
+            aimX=targetX;aimY=targetY;
+            if(!placed){x=targetX;y=targetY;vx=vy=0;placed=true;place();}
+            if(getVisibility()!=View.VISIBLE)setVisibility(View.VISIBLE);
+            if(lock!=locked||dwell!=progress){locked=lock;progress=dwell;ring.setColor(lock?ACCENT:SCAN);fill.setColor(lock?Color.argb(120,188,235,207):Color.argb(90,255,221,133));invalidate();}
+            if(!animating){animating=true;lastFrame=0;Choreographer.getInstance().postFrameCallback(this);}
         }
+        void hide(){
+            if(getVisibility()!=View.GONE)setVisibility(View.GONE);
+            placed=false;animating=false;Choreographer.getInstance().removeFrameCallback(this);
+        }
+        @Override public void doFrame(long nanos){
+            if(!animating)return;
+            float dt=lastFrame==0?.016f:Math.min(.05f,(nanos-lastFrame)/1e9f);lastFrame=nanos;
+            // Slightly under-damped spring; stiffer when locked so it snaps to the button centre.
+            float stiffness=locked?260:140,damping=2*.8f*(float)Math.sqrt(stiffness);
+            vx+=(stiffness*(aimX-x)-damping*vx)*dt;vy+=(stiffness*(aimY-y)-damping*vy)*dt;x+=vx*dt;y+=vy*dt;
+            place();Choreographer.getInstance().postFrameCallback(this);
+        }
+        private void place(){setTranslationX(x-getWidth()/2f);setTranslationY(y-getHeight()/2f);}
+        @Override protected void onDetachedFromWindow(){animating=false;Choreographer.getInstance().removeFrameCallback(this);super.onDetachedFromWindow();}
         @Override protected void onDraw(Canvas canvas){
             float inset=dp(5),radius=getWidth()/2f-inset,cx=getWidth()/2f,cy=getHeight()/2f;
             canvas.drawCircle(cx,cy,radius,fill);canvas.drawCircle(cx,cy,radius,ring);canvas.drawCircle(cx,cy,dp(3),ring);
@@ -776,7 +838,7 @@ public final class MainActivity extends Activity {
         if(cameraWanted&&cameraTracker==null&&!requestingCamera&&checkSelfPermission(Manifest.permission.CAMERA)==PackageManager.PERMISSION_GRANTED)startCamera();
     }
     @Override protected void onPause(){
-        running=false;handler.removeCallbacks(tick);
+        running=false;handler.removeCallbacks(tick);if(pointer!=null)pointer.hide();lockedButton=null;lockCandidate=null;
         if(pack!=null)((DisplayManager)getSystemService(DISPLAY_SERVICE)).unregisterDisplayListener(displayListener);
         // Rotation and our own permission prompt are not the user leaving the app.
         if(pack!=null){if(!requestingCamera&&!isChangingConfigurations())setPaused(true);stopCamera(false);}

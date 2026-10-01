@@ -38,8 +38,13 @@ screen. No fallback speaks a different language. Speech plays on the media strea
 so the status line warns when media volume is muted.
 
 A round pointer appears whenever the camera tracks a face: before calibration it
-follows head turns, afterwards the calibrated gaze. In Eye tracking mode it fills a
-ring as dwell progresses; it glides between camera samples rather than jumping.
+follows head turns, afterwards the calibrated gaze. The pointer moves as a damped spring,
+animated every display frame, so it has momentum: it accelerates, glides and settles
+instead of jumping between camera samples. When it rests on a button, or within a
+few millimetres of one, for about 0.1 s it locks on: it turns green, glides to the
+button's centre and stays there until the gaze has been clearly outside the button
+(plus a margin) for 0.15 s, so jitter cannot reset a dwell. In Eye tracking mode it
+fills a ring as dwell progresses, and dwell and blink act on the locked button.
 Blink to select (Settings, on by default) presses whatever the pointer is on, or the
 highlighted row or button while scanning, when both eyes close for between the set
 blink length (600 ms by default) and 2.5 s; natural blinks are shorter and resting
