@@ -44,8 +44,11 @@ other controls available; once Android stops showing the prompt, the camera butt
 opens App info so the permission can be granted there. While the camera runs, a
 small preview next to the title shows what the model sees, with dots on the irises,
 eye corners and nose; nothing is recorded or saved. The camera captures at about
-1280×960 and, once a face is found, the app zooms in on it in software and eases the
-crop after the face, so small head movements do not shake the face frame. (A sensor
+1280×960 and, once a face has been steady for a few frames, the app zooms in on it in
+software and locks the framing (a green border on the preview). It only re-frames,
+gliding and then locking again, when the eyes near the edge of the frame or the face
+moves much closer or further away, and it holds the lock for 3 s through blinks and
+brief turns before zooming out to search. (A sensor
 crop was tried first; the MediaTek MT6768 camera driver crashes on crops that follow
 a face.) Exposure meters on the face where the camera supports it. If no face is
 found, the app tries the other image rotations in case the device reports its

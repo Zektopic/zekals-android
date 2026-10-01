@@ -60,6 +60,10 @@ final class CameraTracker implements AutoCloseable {
      * some vendor ISPs (MediaTek MT6768) crash on crops that follow a face.
      */
     private float cropX,cropY,cropWidth;
+    /** Face lock: the crop stays put while locked; lockSpan is the eye distance it was framed for. */
+    private boolean faceLocked,reframing;
+    private int faceStreak;
+    private double lockSpan;
     private int usedX,usedY,usedWidth,usedHeight,baseRotation;
     private long lastFace,searchStart;
     private int searchFrames,streak;
@@ -180,23 +184,37 @@ final class CameraTracker implements AutoCloseable {
         return Bitmap.createBitmap(bitmap,usedX,usedY,usedWidth,usedHeight);
     }
     /**
-     * Zooms the software crop so the eyes span about a quarter of it and eases it after the face, so small
-     * head movements do not shake the face frame. Zooms back out when the face has been lost for a while.
+     * Locks the camera onto the face: once the face has been steady for a few frames the zoomed crop freezes
+     * on it. It only re-frames (gliding, then locking again) when the eyes near the edge of the frame or the
+     * face moves much closer or further away, and it holds the lock through blinks and brief turns.
      */
     private void followFace(float[] marks,long now){
         int width=bitmap.getWidth(),height=bitmap.getHeight();
-        if(marks==null||marks.length<16){if(now-lastFace>1500)cropWidth=0;return;}
-        lastFace=now;
+        if(marks==null||marks.length<16){
+            faceStreak=0;
+            if(now-lastFace>(faceLocked?3000:1500)&&cropWidth>0){cropWidth=0;faceLocked=false;reframing=false;android.util.Log.i(TAG,"Face lock released");}
+            return;
+        }
+        lastFace=now;faceStreak++;
         double lx=usedX+marks[4]*usedWidth,ly=usedY+marks[5]*usedHeight,rx=usedX+marks[14]*usedWidth,ry=usedY+marks[15]*usedHeight;
         double span=Math.hypot(rx-lx,ry-ly);if(span<4)return;
         // Centre a little below the eyes so the nose and mouth stay in frame.
         double wantWidth=Math.max(width/3.0,Math.min(width,span/.25)),wantHeight=wantWidth*height/width;
         double wantX=(lx+rx)/2-wantWidth/2,wantY=(ly+ry)/2+span*.25-wantHeight/2;
-        if(cropWidth<=0){cropWidth=(float)wantWidth;cropX=(float)wantX;cropY=(float)wantY;return;}
-        float ease=.25f;double dead=cropWidth*.03;
-        if(Math.abs(wantX-cropX)>dead)cropX+=(float)((wantX-cropX)*ease);
-        if(Math.abs(wantY-cropY)>dead)cropY+=(float)((wantY-cropY)*ease);
-        if(Math.abs(wantWidth-cropWidth)>cropWidth*.08)cropWidth+=(float)((wantWidth-cropWidth)*ease);
+        if(cropWidth<=0){
+            if(faceStreak<3)return;
+            cropWidth=(float)wantWidth;cropX=(float)wantX;cropY=(float)wantY;faceLocked=true;lockSpan=span;
+            android.util.Log.i(TAG,String.format(java.util.Locale.ROOT,"Face locked at %.1fx zoom",width/wantWidth));return;
+        }
+        if(faceLocked&&!reframing){
+            double eyeX=((lx+rx)/2-cropX)/cropWidth,eyeY=((ly+ry)/2-cropY)/(cropWidth*height/width);
+            boolean far=eyeX<.25||eyeX>.75||eyeY<.2||eyeY>.7||span<lockSpan*.65||span>lockSpan*1.5;
+            if(!far)return;
+            reframing=true;android.util.Log.i(TAG,"Re-framing the face");
+        }
+        float ease=.25f;
+        cropX+=(float)((wantX-cropX)*ease);cropY+=(float)((wantY-cropY)*ease);cropWidth+=(float)((wantWidth-cropWidth)*ease);
+        if(Math.abs(wantX-cropX)<cropWidth*.02&&Math.abs(wantY-cropY)<cropWidth*.02&&Math.abs(wantWidth-cropWidth)<cropWidth*.03){reframing=false;faceLocked=true;lockSpan=span;}
     }
     /** Until a face is found, tries the other image rotations in case the device reports its sensor angle wrongly. */
     private void searchRotation(boolean face,long now){
@@ -210,12 +228,12 @@ final class CameraTracker implements AutoCloseable {
         }
         streak=0;
         if(faceFound){
-            if(!sensorRotation&&now-lastFace>10000){faceFound=false;rotationTry=0;rotation=baseRotation;searchStart=now;searchFrames=0;cropWidth=0;android.util.Log.i(TAG,"Face lost; back to the sensor rotation "+rotation+"°");}
+            if(!sensorRotation&&now-lastFace>10000){faceFound=false;rotationTry=0;rotation=baseRotation;searchStart=now;searchFrames=0;cropWidth=0;faceLocked=false;reframing=false;android.util.Log.i(TAG,"Face lost; back to the sensor rotation "+rotation+"°");}
             return;
         }
         if(searchStart==0||++searchFrames<12||now-searchStart<(sensorRotation?6000:2500))return;
         rotationTry=(rotationTry+1)%ROTATION_TRIES.length;rotation=(baseRotation+ROTATION_TRIES[rotationTry])%360;searchStart=now;searchFrames=0;
-        cropWidth=0;
+        cropWidth=0;faceLocked=false;reframing=false;
         android.util.Log.i(TAG,"No face yet; trying image rotation "+rotation+"°");
     }
     private Bitmap preview(Bitmap source,float[] landmarks){
@@ -225,6 +243,8 @@ final class CameraTracker implements AutoCloseable {
             Canvas canvas=new Canvas(frame);dot.setStyle(Paint.Style.FILL);
             for(int i=0;i+1<landmarks.length;i+=2){dot.setColor(i<4?Color.rgb(188,235,207):Color.rgb(255,221,133));canvas.drawCircle(landmarks[i]*width,landmarks[i+1]*height,i<4?3.5f:2f,dot);}
         }
+        // A green border shows the camera is locked onto the face.
+        if(faceLocked&&!reframing){Canvas canvas=new Canvas(frame);dot.setStyle(Paint.Style.STROKE);dot.setStrokeWidth(4);dot.setColor(Color.rgb(188,235,207));canvas.drawRect(2,2,width-2,height-2,dot);}
         return frame;
     }
     @Override public synchronized void close(){
