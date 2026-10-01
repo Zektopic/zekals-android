@@ -51,4 +51,5 @@ def verifyVisionModel = tasks.register('verifyVisionModel') {
         }
     }
 }
-tasks.configureEach { if (it.name ==~ /preVision(Debug|Release)Build/) it.dependsOn(verifyVisionModel) }
+// Asset merging is Vision-only; pre-build tasks are also reached from Lite through the shared CMake build.
+tasks.configureEach { if (it.name ==~ /mergeVision(Debug|Release)Assets/) it.dependsOn(verifyVisionModel) }
