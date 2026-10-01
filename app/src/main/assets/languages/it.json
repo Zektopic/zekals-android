@@ -125,7 +125,10 @@
     "calibrationLost": "Tracciamento perso durante la calibrazione. Riprova.",
     "scrollUp": "Scorri su",
     "scrollDown": "Scorri giù",
-    "joinLetters": "Unisci lettere"
+    "joinLetters": "Unisci lettere",
+    "cameraControl": "Fotocamera: avvia / arresta",
+    "inference": "Elaborazione",
+    "cancelCalibration": "Annulla calibrazione"
   },
   "speech": {
     "locale": "it-IT",

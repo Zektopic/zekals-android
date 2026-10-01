@@ -132,7 +132,10 @@
     "calibrationLost": "Suivi perdu pendant la calibration. Réessayez.",
     "scrollUp": "Défiler vers le haut",
     "scrollDown": "Défiler vers le bas",
-    "joinLetters": "Lier les lettres"
+    "joinLetters": "Lier les lettres",
+    "cameraControl": "Caméra : démarrer / arrêter",
+    "inference": "Calcul",
+    "cancelCalibration": "Annuler la calibration"
   },
   "speech": {
     "locale": "fr-FR",

@@ -105,7 +105,10 @@
     "calibrationLost": "Tracking lost during calibration. Please retry.",
     "scrollUp": "Κύλιση πάνω",
     "scrollDown": "Κύλιση κάτω",
-    "joinLetters": "Σύνδεση γραμμάτων"
+    "joinLetters": "Σύνδεση γραμμάτων",
+    "cameraControl": "Έναρξη / διακοπή κάμερας",
+    "inference": "Επεξεργασία",
+    "cancelCalibration": "Ακύρωση βαθμονόμησης"
   },
   "schemaVersion": 1,
   "locale": "el-GR",

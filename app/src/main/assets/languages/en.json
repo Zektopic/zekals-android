@@ -117,7 +117,10 @@
     "calibrationLost": "Tracking lost during calibration. Please retry.",
     "scrollUp": "Scroll up",
     "scrollDown": "Scroll down",
-    "joinLetters": "Join letters"
+    "joinLetters": "Join letters",
+    "cameraControl": "Camera: start / stop",
+    "inference": "Inference",
+    "cancelCalibration": "Cancel calibration"
   },
   "speech": {
     "locale": "en-US",

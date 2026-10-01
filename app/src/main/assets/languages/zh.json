@@ -157,7 +157,10 @@
     "calibrationLost": "校准时追踪丢失，请重试。",
     "scrollUp": "向上滚动",
     "scrollDown": "向下滚动",
-    "joinLetters": "连接字符"
+    "joinLetters": "连接字符",
+    "cameraControl": "启动 / 停止摄像头",
+    "inference": "推理",
+    "cancelCalibration": "取消校准"
   },
   "speech": {
     "locale": "zh-CN",

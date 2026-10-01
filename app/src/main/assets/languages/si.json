@@ -171,7 +171,10 @@
     "calibrationLost": "ක්‍රමාංකනය අතරතුර ඇස් පාලනය නැති විය. නැවත උත්සාහ කරන්න.",
     "scrollUp": "ඉහළට යන්න",
     "scrollDown": "පහළට යන්න",
-    "joinLetters": "අකුරු බැඳීම"
+    "joinLetters": "අකුරු බැඳීම",
+    "cameraControl": "කැමරාව අරඹන්න / නවත්වන්න",
+    "inference": "සැකසීම",
+    "cancelCalibration": "ක්‍රමාංකනය අවලංගු කරන්න"
   },
   "speech": {
     "locale": "si-LK",
