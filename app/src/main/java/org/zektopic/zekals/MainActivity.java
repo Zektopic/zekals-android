@@ -349,7 +349,11 @@ public final class MainActivity extends Activity {
         lastGazeTime=valid?sample.captured:0;
         // Calibration learns from the raw eye features; the pointer is smoothed after mapping,
         // because the native filter only accepts screen fractions in [0,1].
-        if(valid&&calibration!=null){double[] mapped=calibration.map(sample.point[0],sample.point[1]);NativeCore.smooth(gazeState,mapped[0],mapped[1],sample.captured,120,true);}
+        if(valid&&calibration!=null&&calibration.dimensions()!=sample.point.length){
+            // A calibration from another tracker version uses different features.
+            Log.i(TAG,"Stored calibration expects "+calibration.dimensions()+" features, tracker gives "+sample.point.length);calibration=null;preferences.edit().remove("calibration").apply();
+        }
+        if(valid&&calibration!=null){double[] mapped=calibration.map(sample.point);NativeCore.smooth(gazeState,mapped[0],mapped[1],sample.captured,120,true);}
         else NativeCore.smooth(gazeState,0,0,sample.captured,120,false);
         if(!valid){if(mode==3)resetDwell();cameraText(t("cameraNoFace","No face detected")+" · "+sample.provider);return;}
         if(calibrationIndex>=0&&!calibrationPositioning&&calibrationTracked>=SETTLE_MS)calibrationPoints.add(sample.point.clone());
@@ -387,8 +391,9 @@ public final class MainActivity extends Activity {
     private void restoreCalibration(){
         String stored=preferences.getString("calibration",null);if(stored==null)return;
         try{
-            String[] parts=stored.split(",");double[] values=new double[6];for(int i=0;i<6;i++)values[i]=Double.parseDouble(parts[i]);
-            calibration=Calibration.restore(values);calibrationWidth=Integer.parseInt(parts[6]);calibrationHeight=Integer.parseInt(parts[7]);calibrationRotation=Integer.parseInt(parts[8]);
+            // Coefficients for both axes, then width, height and rotation.
+            String[] parts=stored.split(",");int count=parts.length-3;double[] values=new double[count];for(int i=0;i<count;i++)values[i]=Double.parseDouble(parts[i]);
+            calibration=Calibration.restore(values);calibrationWidth=Integer.parseInt(parts[count]);calibrationHeight=Integer.parseInt(parts[count+1]);calibrationRotation=Integer.parseInt(parts[count+2]);
         }catch(RuntimeException error){Log.w(TAG,"Discarding stored calibration",error);calibration=null;preferences.edit().remove("calibration").apply();}
     }
     private void startCalibration(){
@@ -427,12 +432,12 @@ public final class MainActivity extends Activity {
         if(calibrationMissing>FACE_LOST_MS){Log.i(TAG,"Calibration cancelled: face lost on target "+(calibrationIndex+1));cancelCalibration();notice(t("calibrationLost","Tracking lost. Please retry."));return;}
         if(calibrationTracked<TARGET_MS||calibrationPoints.size()<6)return;
         // The median ignores blinks and glances away better than the mean.
-        double[] median=new double[2],spread=new double[2];
-        for(int axis=0;axis<2;axis++){
+        int features=calibrationPoints.get(0).length;double[] median=new double[features],spread=new double[features];
+        for(int axis=0;axis<features;axis++){
             double[] values=new double[calibrationPoints.size()];for(int i=0;i<values.length;i++)values[i]=calibrationPoints.get(i)[axis];
             Arrays.sort(values);median[axis]=values[values.length/2];spread[axis]=values[values.length*3/4]-values[values.length/4];
         }
-        Log.i(TAG,String.format(java.util.Locale.ROOT,"Calibration target %d at (%.2f,%.2f): %d samples, median (%.3f,%.3f), IQR (%.3f,%.3f)",calibrationIndex+1,calibrationTargets[calibrationIndex][0],calibrationTargets[calibrationIndex][1],calibrationPoints.size(),median[0],median[1],spread[0],spread[1]));
+        Log.i(TAG,String.format(java.util.Locale.ROOT,"Calibration target %d at (%.2f,%.2f): %d samples, median %s, IQR %s",calibrationIndex+1,calibrationTargets[calibrationIndex][0],calibrationTargets[calibrationIndex][1],calibrationPoints.size(),Arrays.toString(median),Arrays.toString(spread)));
         calibrationSamples.add(median);calibrationIndex++;nextCalibration();
     }
     /** A calibration dot with a ring that fills while the eyes are measured on it. */

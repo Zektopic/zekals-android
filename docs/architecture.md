@@ -30,8 +30,11 @@ provider change discards it. A failed session clears its tracker so one press
 retries. The screen stays on only while the camera runs. The app has no foreground
 camera service or hidden background recording.
 
-Calibration fits a two-output affine transform from five normalized feature
-samples. It rejects singular systems and high fitting residuals. This is a basic
+Calibration fits a two-output affine transform from nine targets. MediaPipe
+features are the iris position within each eye and a head-turn proxy (nose tip
+relative to the eye corners, divided by the eye distance), so they do not change
+when the sensor crop zooms or moves. The fit rejects singular systems and reports
+its residual; the activity rejects fits above 25% of the screen. This is a basic
 webcam iris estimator and does not compensate robustly for all head motion or
 clinical conditions. The native dwell state fires once per target entry. After
 activation, gaze must leave the activated rectangle before another action, even

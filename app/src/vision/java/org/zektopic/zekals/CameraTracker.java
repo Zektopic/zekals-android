@@ -7,6 +7,9 @@ import android.graphics.Bitmap;
 import android.graphics.Canvas;
 import android.graphics.Color;
 import android.graphics.Paint;
+import android.graphics.Rect;
+import android.util.Range;
+import android.util.Rational;
 import android.graphics.ImageFormat;
 import android.hardware.camera2.*;
 import android.media.Image;
@@ -49,7 +52,19 @@ final class CameraTracker implements AutoCloseable {
     private String providerNote="";
     private long lastPreview,diagnosticStart;
     private int frames,faces;
-    private double sumX,sumY,sumXX,sumYY;
+    private final double[] sums=new double[4],squares=new double[4];
+    /** Sensor area and the current crop: the crop follows the face so it fills the frame at full sensor detail. */
+    private CameraCharacteristics cameraInfo;
+    private CaptureRequest.Builder request;
+    private Rect sensorArea,fullCrop,crop;
+    private float maxZoom=1;
+    private int outputWide,outputTall,baseRotation;
+    private long lastFace,lastCrop,searchStart;
+    private int searchFrames;
+    private boolean faceFound;
+    /** Some devices report the wrong sensor orientation; the rotation that found a face is kept for the process. */
+    private static final int[] ROTATION_TRIES={0,180,90,270};
+    private static int rotationTry;
     private final Paint dot=new Paint(Paint.ANTI_ALIAS_FLAG);
     CameraTracker(Context context,String requested,int displayRotation,Listener listener){
         this.context=context.getApplicationContext();this.requested=requested;this.listener=listener;
@@ -77,7 +92,7 @@ final class CameraTracker implements AutoCloseable {
             }
             if(selected==null){fail("noFrontCamera","No front-facing camera found.",null);return;}
             Integer orientation=characteristics.get(CameraCharacteristics.SENSOR_ORIENTATION);
-            rotation=((orientation==null?0:orientation)+displayDegrees)%360;
+            baseRotation=((orientation==null?0:orientation)+displayDegrees)%360;rotation=(baseRotation+ROTATION_TRIES[rotationTry])%360;cameraInfo=characteristics;
             var map=characteristics.get(CameraCharacteristics.SCALER_STREAM_CONFIGURATION_MAP);
             if(map==null)throw new IllegalStateException("No capture formats");
             Size[] sizes=map.getOutputSizes(ImageFormat.YUV_420_888);if(sizes==null||sizes.length==0)throw new IllegalStateException("No YUV capture support");
@@ -86,6 +101,14 @@ final class CameraTracker implements AutoCloseable {
             android.util.Log.i(TAG,"Camera "+selected+" capture "+size+", sensor "+orientation+"°, display "+displayDegrees+"°, image rotation "+rotation+"°");
             if(size.getWidth()>4096||size.getHeight()>4096)throw new IllegalArgumentException("Camera size exceeds bound");
             reader=ImageReader.newInstance(size.getWidth(),size.getHeight(),ImageFormat.YUV_420_888,2);
+            outputWide=size.getWidth();outputTall=size.getHeight();
+            sensorArea=characteristics.get(CameraCharacteristics.SENSOR_INFO_ACTIVE_ARRAY_SIZE);
+            Float zoom=characteristics.get(CameraCharacteristics.SCALER_AVAILABLE_MAX_DIGITAL_ZOOM);maxZoom=zoom==null?1:Math.min(3f,zoom);
+            if(sensorArea!=null){
+                // The largest crop with the output's aspect, so crop coordinates match the image exactly.
+                int w=sensorArea.width(),h=sensorArea.height();if((long)w*outputTall>(long)h*outputWide)w=(int)((long)h*outputWide/outputTall);else h=(int)((long)w*outputTall/outputWide);
+                fullCrop=new Rect(sensorArea.centerX()-w/2,sensorArea.centerY()-h/2,sensorArea.centerX()-w/2+w,sensorArea.centerY()-h/2+h);crop=new Rect(fullCrop);
+            }
             reader.setOnImageAvailableListener(this::onImage,handler);
             manager.openCamera(selected,new CameraDevice.StateCallback(){
                 @Override public void onOpened(CameraDevice device){
@@ -93,7 +116,7 @@ final class CameraTracker implements AutoCloseable {
                     try{device.createCaptureSession(Collections.singletonList(reader.getSurface()),new CameraCaptureSession.StateCallback(){
                         @Override public void onConfigured(CameraCaptureSession value){
                             if(!active){value.close();return;}session=value;
-                            try{CaptureRequest.Builder request=camera.createCaptureRequest(CameraDevice.TEMPLATE_PREVIEW);request.addTarget(reader.getSurface());request.set(CaptureRequest.CONTROL_MODE,CaptureRequest.CONTROL_MODE_AUTO);session.setRepeatingRequest(request.build(),null,handler);}
+                            try{request=camera.createCaptureRequest(CameraDevice.TEMPLATE_PREVIEW);request.addTarget(reader.getSurface());configureExposure();if(crop!=null)request.set(CaptureRequest.SCALER_CROP_REGION,crop);session.setRepeatingRequest(request.build(),null,handler);searchStart=SystemClock.uptimeMillis();}
                             catch(CameraAccessException error){fail("cameraFailed","The camera stopped working. Other input still works.",error);}
                         }
                         @Override public void onConfigureFailed(CameraCaptureSession value){value.close();fail("cameraFailed","The camera stopped working. Other input still works.",null);}
@@ -123,6 +146,8 @@ final class CameraTracker implements AutoCloseable {
                 estimator.close();estimator=new MediaPipeEstimator(context,false);point=estimator.predict(bitmap,++lastTimestamp);
             }
             if(active)listener.sample(point,now,estimator.provider()+providerNote);
+            followFace(point==null?null:estimator.landmarks(),now);
+            searchRotation(point!=null,now);
             diagnose(point,now,width,height);
             if(now-lastPreview>=PREVIEW_MS&&active){lastPreview=now;listener.preview(preview(estimator.landmarks()));}
         }catch(Exception | LinkageError error){fail("trackingLost","Eye tracking stopped. Use touch, keyboard or switch access.",error);}
@@ -130,12 +155,58 @@ final class CameraTracker implements AutoCloseable {
     /** Logs detection rate and feature spread every few seconds; never message text or images. */
     private void diagnose(double[] point,long now,int width,int height){
         if(diagnosticStart==0)diagnosticStart=now;
-        frames++;if(point!=null){faces++;sumX+=point[0];sumY+=point[1];sumXX+=point[0]*point[0];sumYY+=point[1]*point[1];}
+        frames++;if(point!=null){faces++;for(int i=0;i<Math.min(4,point.length);i++){sums[i]+=point[i];squares[i]+=point[i]*point[i];}}
         if(now-diagnosticStart<DIAGNOSTIC_MS)return;
-        double meanX=faces==0?0:sumX/faces,meanY=faces==0?0:sumY/faces;
-        double sdX=faces<2?0:Math.sqrt(Math.max(0,sumXX/faces-meanX*meanX)),sdY=faces<2?0:Math.sqrt(Math.max(0,sumYY/faces-meanY*meanY));
-        android.util.Log.i(TAG,String.format(java.util.Locale.ROOT,"tracking %dx%d rot %d: %d frames, %d with eyes, x %.3f±%.3f, y %.3f±%.3f, %s",width,height,rotation,frames,faces,meanX,sdX,meanY,sdY,estimator.provider()));
-        diagnosticStart=now;frames=0;faces=0;sumX=sumY=sumXX=sumYY=0;
+        StringBuilder stats=new StringBuilder();String[] names={"eyeX","eyeY","headX","headY"};
+        for(int i=0;i<4&&faces>0;i++){double mean=sums[i]/faces,sd=faces<2?0:Math.sqrt(Math.max(0,squares[i]/faces-mean*mean));stats.append(String.format(java.util.Locale.ROOT,", %s %.3f±%.3f",names[i],mean,sd));}
+        float zoom=crop==null||fullCrop==null?1:fullCrop.width()/(float)crop.width();
+        android.util.Log.i(TAG,String.format(java.util.Locale.ROOT,"tracking %dx%d rot %d zoom %.2fx: %d frames, %d with eyes%s, %s",width,height,rotation,zoom,frames,faces,stats,estimator.provider()));
+        diagnosticStart=now;frames=0;faces=0;java.util.Arrays.fill(sums,0);java.util.Arrays.fill(squares,0);
+    }
+    private void configureExposure(){
+        // Face-priority metering stops a bright lamp behind the user from leaving the face too dark to find.
+        boolean facePriority=contains(cameraInfo.get(CameraCharacteristics.CONTROL_AVAILABLE_SCENE_MODES),CameraMetadata.CONTROL_SCENE_MODE_FACE_PRIORITY);
+        if(facePriority){request.set(CaptureRequest.CONTROL_MODE,CaptureRequest.CONTROL_MODE_USE_SCENE_MODE);request.set(CaptureRequest.CONTROL_SCENE_MODE,CaptureRequest.CONTROL_SCENE_MODE_FACE_PRIORITY);}
+        else request.set(CaptureRequest.CONTROL_MODE,CaptureRequest.CONTROL_MODE_AUTO);
+        if(contains(cameraInfo.get(CameraCharacteristics.STATISTICS_INFO_AVAILABLE_FACE_DETECT_MODES),CameraMetadata.STATISTICS_FACE_DETECT_MODE_SIMPLE))request.set(CaptureRequest.STATISTICS_FACE_DETECT_MODE,CaptureRequest.STATISTICS_FACE_DETECT_MODE_SIMPLE);
+        Range<Integer> range=cameraInfo.get(CameraCharacteristics.CONTROL_AE_COMPENSATION_RANGE);Rational step=cameraInfo.get(CameraCharacteristics.CONTROL_AE_COMPENSATION_STEP);
+        int ev=0;if(range!=null&&step!=null&&step.floatValue()>0){ev=Math.max(range.getLower(),Math.min(range.getUpper(),Math.round(.5f/step.floatValue())));request.set(CaptureRequest.CONTROL_AE_EXPOSURE_COMPENSATION,ev);}
+        android.util.Log.i(TAG,"Exposure: face priority "+facePriority+", compensation "+ev+" steps, max zoom "+maxZoom+"x, sensor "+sensorArea);
+    }
+    private static boolean contains(int[] values,int wanted){if(values!=null)for(int value:values)if(value==wanted)return true;return false;}
+    /** Maps a point in the upright, mirrored image to the current crop, as fractions of the crop. */
+    private double[] toCrop(double u,double v){
+        u=1-u;
+        switch(rotation){case 90:return new double[]{v,1-u};case 180:return new double[]{1-u,1-v};case 270:return new double[]{1-v,u};default:return new double[]{u,v};}
+    }
+    /**
+     * Zooms the sensor crop so the eyes span about a quarter of the frame and re-centres it only when
+     * the face drifts, so the face frame stays steady. Zooms back out when the face is lost.
+     */
+    private void followFace(float[] marks,long now){
+        if(fullCrop==null||request==null||session==null||maxZoom<=1.05f)return;
+        if(marks==null||marks.length<16){if(now-lastFace>1500&&!crop.equals(fullCrop))applyCrop(new Rect(fullCrop),now);return;}
+        lastFace=now;
+        double[] left=toCrop(marks[4],marks[5]),right=toCrop(marks[14],marks[15]);
+        double cx=crop.left+(left[0]+right[0])/2*crop.width(),cy=crop.top+(left[1]+right[1])/2*crop.height();
+        double eyes=Math.hypot((left[0]-right[0])*crop.width(),(left[1]-right[1])*crop.height());
+        double width=Math.max(fullCrop.width()/maxZoom,Math.min(fullCrop.width(),eyes/.25)),height=width*fullCrop.height()/fullCrop.width();
+        boolean moved=Math.abs(cx-crop.exactCenterX())>crop.width()*.12||Math.abs(cy-crop.exactCenterY())>crop.height()*.12||Math.abs(width-crop.width())>crop.width()*.2;
+        if(!moved||now-lastCrop<600)return;
+        int x=(int)Math.round(Math.max(fullCrop.left,Math.min(fullCrop.right-width,cx-width/2))),y=(int)Math.round(Math.max(fullCrop.top,Math.min(fullCrop.bottom-height,cy-height/2)));
+        applyCrop(new Rect(x,y,x+(int)width,y+(int)height),now);
+    }
+    private void applyCrop(Rect next,long now){
+        crop=next;lastCrop=now;request.set(CaptureRequest.SCALER_CROP_REGION,crop);
+        try{session.setRepeatingRequest(request.build(),null,handler);}catch(CameraAccessException | IllegalStateException error){android.util.Log.w(TAG,"Zoom update failed",error);}
+    }
+    /** Until a face is found, tries the other image rotations in case the device reports its sensor angle wrongly. */
+    private void searchRotation(boolean face,long now){
+        if(face){if(!faceFound)android.util.Log.i(TAG,"Face found with image rotation "+rotation+"° (sensor-based "+baseRotation+"°)");faceFound=true;return;}
+        if(faceFound||searchStart==0||++searchFrames<12||now-searchStart<2500)return;
+        rotationTry=(rotationTry+1)%ROTATION_TRIES.length;rotation=(baseRotation+ROTATION_TRIES[rotationTry])%360;searchStart=now;searchFrames=0;
+        if(fullCrop!=null&&!crop.equals(fullCrop)&&request!=null)applyCrop(new Rect(fullCrop),now);
+        android.util.Log.i(TAG,"No face yet; trying image rotation "+rotation+"°");
     }
     private Bitmap preview(float[] landmarks){
         int width=200,height=Math.max(1,Math.round(200f*bitmap.getHeight()/bitmap.getWidth()));

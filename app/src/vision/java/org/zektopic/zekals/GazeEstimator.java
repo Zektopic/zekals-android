@@ -25,7 +25,8 @@ final class MediaPipeEstimator implements GazeEstimator {
     private static final String CHECKSUM="64184e229b263107bc2b804c6625db1341ff2bb731874b0bcc2fe6544e0bc9ff";
     private final FaceLandmarker landmarker;
     private final String provider;
-    private static final int[] SHOWN={468,473,33,133,159,145,362,263,386,374};
+    /** Iris centres, then eye corners and lids, then the nose tip; CameraTracker reads the outer corners for zoom. */
+    static final int[] SHOWN={468,473,33,133,159,145,362,263,386,374,1};
     private volatile float[] lastLandmarks;
     MediaPipeEstimator(Context context,boolean gpu) throws Exception {
         verify(context,"face_landmarker.task",CHECKSUM);
@@ -67,7 +68,14 @@ final class MediaPipeEstimator implements GazeEstimator {
                 x+=(points.get(eye[0]).x()-Math.min(points.get(eye[1]).x(),points.get(eye[2]).x()))/width;
                 y+=(points.get(eye[0]).y()-Math.min(points.get(eye[3]).y(),points.get(eye[4]).y()))/height;
             }
-            x/=2;y/=2;return Double.isFinite(x)&&Double.isFinite(y)&&x>=0&&x<=1&&y>=0&&y<=1?new double[]{x,y}:null;
+            x/=2;y/=2;
+            // Head turn: the nose tip moves against the eyes as the head yaws and pitches. Dividing by
+            // the eye distance (in pixels) makes it independent of distance and of the camera crop.
+            double w=bitmap.getWidth(),h=bitmap.getHeight();NormalizedLandmark left=points.get(33),right=points.get(263),nose=points.get(1);
+            double span=Math.hypot((right.x()-left.x())*w,(right.y()-left.y())*h);if(span<1e-3)return null;
+            double headX=(nose.x()-(left.x()+right.x())/2)*w/span,headY=(nose.y()-(left.y()+right.y())/2)*h/span;
+            boolean ok=Double.isFinite(x)&&Double.isFinite(y)&&x>=0&&x<=1&&y>=0&&y<=1&&Double.isFinite(headX)&&Double.isFinite(headY);
+            return ok?new double[]{x,y,headX,headY}:null;
         } finally { image.close(); }
     }
     @Override public String provider(){return provider;}

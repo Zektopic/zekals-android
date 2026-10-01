@@ -42,8 +42,13 @@ start/stop. The app requests camera permission only on this explicit action. No
 microphone or internet permission is requested. A denied permission leaves the
 other controls available; once Android stops showing the prompt, the camera button
 opens App info so the permission can be granted there. While the camera runs, a
-small preview next to the title shows what the model sees, with dots on the irises
-and eye corners; nothing is recorded or saved. The camera status line shows Camera
+small preview next to the title shows what the model sees, with dots on the irises,
+eye corners and nose; nothing is recorded or saved. Once a face is found the camera
+zooms in on it using the sensor's own crop (up to 3x), so the eyes are captured at
+full sensor detail, and it only re-centres when the face drifts, keeping the face
+frame steady. Exposure meters on the face where the camera supports it. If no face
+is found, the app tries the other image rotations in case the device reports its
+camera angle wrongly. The camera status line shows Camera
 off, Starting, No face detected or Eye tracking on, with the inference provider in
 use.
 
@@ -51,7 +56,8 @@ Sit 40–60 cm from the screen and press Calibrate. A large preview appears firs
 centre your face until the dots sit on your eyes, and calibration starts once your
 face has been found for a second. Then look at each of nine dots while its ring
 fills. Time only counts while your face is tracked, so looking away pauses the dot
-rather than failing. The result reports the typical error as a share of the
+rather than failing. Calibration learns from where the irises sit in the eyes and
+from small head turns together, so either can move the pointer. The result reports the typical error as a share of the
 screen; calibrations worse than 25% are rejected. Try the large phrase buttons
 first.
 In Eye tracking a pointer follows the gaze. The calibration is kept across app
