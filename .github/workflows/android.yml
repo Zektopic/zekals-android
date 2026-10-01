@@ -41,7 +41,7 @@ jobs:
       - if: matrix.flavor == 'Vision'
         run: python3 scripts/download_model.py
       - run: ./gradlew :app:assemble${{ matrix.flavor }}Debug :app:lint${{ matrix.flavor }}Debug --no-daemon
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         with:
           name: zekals-${{ matrix.flavor }}-debug
           path: app/build/outputs/apk/**/*.apk
