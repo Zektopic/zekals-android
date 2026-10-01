@@ -19,22 +19,24 @@ October 2026 development session, Linux x86_64 host.
 
 Windows 11 host, AGP 8.9.2, JDK 21 (Android Studio JBR), NDK 28.2.13676358.
 Devices: Redmi Note 13 (23129RAA4G, Android 16 / API 36, HyperOS) and Lenovo Tab M11
-(TB330FU, Android 15 / API 35). Inputs were injected with `adb`; no real switch,
-mouse or TalkBack session was used.
+(TB330FU, Android 15 / API 35). The phone tested the original branch and a one-line
+diagnostic patch; every fix below was verified on the tablet only. Inputs were
+injected with `adb`; no real switch, mouse or TalkBack session was used.
 
 | Check | Evidence |
 | --- | --- |
 | Builds and lint | Lite/Vision debug and release build; lint reports no issues |
-| Native core on device | `core_test` cross-compiled for arm64 and run on the phone under ASan and UBSan; 32,000 extra `rgba` conversions with odd sizes, padding, interleaved chroma and Android-minimal buffers: no out-of-bounds access, every output pixel written |
+| Native core on device (phone) | `core_test` cross-compiled for arm64 and run on the phone under ASan and UBSan; 32,000 extra `rgba` conversions with odd sizes, padding, interleaved chroma and Android-minimal buffers: no out-of-bounds access, every output pixel written |
 | 16 KB pages | `zipalign -P 16` and ELF `LOAD` alignment 0x4000 for every `.so`, including MediaPipe and ONNX Runtime |
-| Camera tracking | Original branch stopped on the second frame (`MPImage.close()` recycled the reused bitmap). Fixed build tracks continuously, debug and R8 release, on both devices |
-| R8 release | Original Vision release failed in MediaPipe (protobuf-lite fields, then Flogger caller lookup). Keep rules added; release tracks for 30 s+ on the tablet |
-| Lifecycle | Camera released in background, restarted on return; camera permission prompt no longer pauses selection; mode and pause state survive rotation |
-| Switch keys | Touch then Space resumes; Escape pauses while a button has keyboard focus; Space while paused resumes without typing (3/3 runs each) |
-| Row/column scanning | Rows highlight, Space opens a row, the next press types the scanned key |
-| Composition and speech | Phrases, keys, Undo/Clear, Sinhala ශ්‍රී composition, offline English TTS with completion status, no-voice message for Sinhala |
-| Telemetry | Merged Vision manifest has no `INTERNET` and no ONNX telemetry provider; no hosts lookups observed on the tablet |
-| Not tested | Gaze accuracy and calibration with a person, the gaze pointer on screen, a 180° landscape flip, NNAPI, TalkBack/Switch Access, real switches, audio quality, long-run thermals |
+| Camera tracking | Original branch stopped on the second frame on both devices (`MPImage.close()` recycled the reused bitmap). A per-frame copy kept it running on the phone; the fixed build tracks continuously on the tablet, debug and R8 release |
+| R8 release | Original Vision release failed in MediaPipe on the phone (protobuf-lite fields) and, with that fixed, on the tablet (Flogger caller lookup). With keep rules the release tracks for 30 s+ on the tablet |
+| Lifecycle (tablet) | Camera released in background, restarted on return; camera permission prompt no longer pauses selection; mode and pause state survive rotation |
+| Switch keys (tablet) | Touch then Space resumes; Escape pauses while a button has keyboard focus; Space while paused resumes without typing (3/3 runs each) |
+| Row/column scanning (tablet) | Rows highlight, Space opens a row, the next press types the scanned key |
+| Composition and speech (phone, original branch) | Phrases, keys, Undo/Clear, Sinhala ශ්‍රී composition, offline English TTS with completion status, no-voice message for Sinhala |
+| Telemetry (tablet) | Merged Vision manifest has no `INTERNET` and no ONNX telemetry provider; no hosts lookups observed on the tablet |
+| CI | Native, Android Lite and Android Vision jobs pass |
+| Not tested | These fixes on the phone (including landscape on a short phone screen and HyperOS key handling), gaze accuracy and calibration with a person, the gaze pointer on screen, a 180° landscape flip, NNAPI, TalkBack/Switch Access, real switches, audio quality, long-run thermals |
 
 The device runs above establish that the Vision pipeline initialises and processes
 frames; they do not establish gaze accuracy. No Android gaze accuracy, NPU execution
