@@ -1,0 +1,8 @@
+.gradle/
+**/build/
+.cxx/
+local.properties
+*.jks
+*.keystore
+*.hprof
+app/src/main/assets/face_landmarker.task
