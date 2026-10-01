@@ -156,7 +156,11 @@
     "selectionProgress": "Progression de la sélection",
     "keyboardInvalid": "Ce clavier n’a pas pu être chargé.",
     "voiceSettings": "Installer des voix",
-    "mediaMuted": "Le volume multimédia est coupé : la voix ne peut pas être entendue."
+    "mediaMuted": "Le volume multimédia est coupé : la voix ne peut pas être entendue.",
+    "settingsBack": "Retour au tableau",
+    "facePosition": "Centrez votre visage dans le cadre. Le calibrage commence dès que votre visage est détecté.",
+    "calibrationQuality": "Calibrage enregistré. Erreur typique : {error} % de l’écran.",
+    "cameraPreview": "Vue de la caméra"
   },
   "speech": {
     "locale": "fr-FR",

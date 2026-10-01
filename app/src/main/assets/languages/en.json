@@ -141,7 +141,11 @@
     "selectionProgress": "Selection progress",
     "keyboardInvalid": "This keyboard could not be loaded.",
     "voiceSettings": "Install voices",
-    "mediaMuted": "Media volume is muted, so speech cannot be heard."
+    "mediaMuted": "Media volume is muted, so speech cannot be heard.",
+    "settingsBack": "Back to board",
+    "facePosition": "Center your face in the frame. Calibration starts when your face is found.",
+    "calibrationQuality": "Calibration saved. Typical error: {error}% of the screen.",
+    "cameraPreview": "Camera view"
   },
   "speech": {
     "locale": "en-US",

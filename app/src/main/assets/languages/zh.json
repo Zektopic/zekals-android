@@ -181,7 +181,11 @@
     "selectionProgress": "选择进度",
     "keyboardInvalid": "无法加载此键盘。",
     "voiceSettings": "安装语音",
-    "mediaMuted": "媒体音量已静音，因此听不到语音。"
+    "mediaMuted": "媒体音量已静音，因此听不到语音。",
+    "settingsBack": "返回主界面",
+    "facePosition": "请将脸部置于画面中央。检测到脸部后开始校准。",
+    "calibrationQuality": "校准已保存。典型误差：屏幕的 {error}%。",
+    "cameraPreview": "摄像头画面"
   },
   "speech": {
     "locale": "zh-CN",

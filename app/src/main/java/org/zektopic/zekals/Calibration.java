@@ -3,7 +3,10 @@ package org.zektopic.zekals;
 /** Five-point least-squares calibration. Pure Java for deterministic host tests. */
 public final class Calibration {
     private final double[][] coefficients;
-    private Calibration(double[][] coefficients) { this.coefficients = coefficients; }
+    private final double error;
+    private Calibration(double[][] coefficients, double error) { this.coefficients = coefficients; this.error = error; }
+    /** Root-mean-square fitting error in screen fractions; the caller decides what is acceptable. */
+    public double error() { return error; }
     public static Calibration fit(double[][] raw, double[][] targets) {
         if(raw.length < 5 || raw.length != targets.length) throw new IllegalArgumentException("Five targets required");
         double[][] result = new double[2][3];
@@ -26,15 +29,15 @@ public final class Calibration {
         }
         double error=0;
         for(int i=0;i<raw.length;i++)for(int axis=0;axis<2;axis++)error+=Math.pow(result[axis][0]*raw[i][0]+result[axis][1]*raw[i][1]+result[axis][2]-targets[i][axis],2);
-        if(!Double.isFinite(error)||Math.sqrt(error/raw.length)>.12)throw new IllegalArgumentException("Calibration error too large");
-        return new Calibration(result);
+        if(!Double.isFinite(error))throw new IllegalArgumentException("Calibration error too large");
+        return new Calibration(result,Math.sqrt(error/raw.length));
     }
     /** Six affine coefficients, row-major, for persisting a calibration between sessions. */
     public double[] values() { return new double[]{coefficients[0][0],coefficients[0][1],coefficients[0][2],coefficients[1][0],coefficients[1][1],coefficients[1][2]}; }
     public static Calibration restore(double[] values) {
         if(values==null||values.length!=6)throw new IllegalArgumentException("Invalid calibration");
         for(double value:values)if(!Double.isFinite(value))throw new IllegalArgumentException("Invalid calibration");
-        return new Calibration(new double[][]{{values[0],values[1],values[2]},{values[3],values[4],values[5]}});
+        return new Calibration(new double[][]{{values[0],values[1],values[2]},{values[3],values[4],values[5]}},Double.NaN);
     }
     public double[] map(double x,double y) {
         if(!Double.isFinite(x)||!Double.isFinite(y))throw new IllegalArgumentException("Invalid gaze");

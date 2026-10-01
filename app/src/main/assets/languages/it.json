@@ -149,7 +149,11 @@
     "selectionProgress": "Avanzamento della selezione",
     "keyboardInvalid": "Impossibile caricare questa tastiera.",
     "voiceSettings": "Installa voci",
-    "mediaMuted": "Il volume multimediale è disattivato, quindi la voce non si sente."
+    "mediaMuted": "Il volume multimediale è disattivato, quindi la voce non si sente.",
+    "settingsBack": "Torna alla tabella",
+    "facePosition": "Centra il viso nell’inquadratura. La calibrazione inizia quando il viso viene rilevato.",
+    "calibrationQuality": "Calibrazione salvata. Errore tipico: {error}% dello schermo.",
+    "cameraPreview": "Vista della fotocamera"
   },
   "speech": {
     "locale": "it-IT",

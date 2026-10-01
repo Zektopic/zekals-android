@@ -37,7 +37,9 @@ screen. No fallback speaks a different language. Speech plays on the media strea
 so the status line warns when media volume is muted.
 
 In Eye tracking a pointer follows the calibrated gaze and fills a ring as dwell
-progresses. Without a calibration there is nothing to draw, and the app says so.
+progresses; it glides between camera samples rather than jumping. Settings is a
+separate page with a Back to board button, so scanning and gaze only reach the
+page that is showing. Without a calibration there is nothing to draw, and the app says so.
 The camera keeps the screen on while it runs, restarts when the app returns to the
 foreground, and the calibration is kept until the camera is stopped from Settings
 or the inference provider changes. Calibration is tied to the screen size and the

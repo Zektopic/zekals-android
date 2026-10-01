@@ -41,13 +41,19 @@ Use Vision. In Settings, choose an inference request (CPU first), then Camera:
 start/stop. The app requests camera permission only on this explicit action. No
 microphone or internet permission is requested. A denied permission leaves the
 other controls available; once Android stops showing the prompt, the camera button
-opens App info so the permission can be granted there. The front camera is used
-without a preview or recording. The camera status line shows Camera off, Starting,
-No face detected or Eye tracking on, with the inference provider actually in use.
+opens App info so the permission can be granted there. While the camera runs, a
+small preview next to the title shows what the model sees, with dots on the irises
+and eye corners; nothing is recorded or saved. The camera status line shows Camera
+off, Starting, No face detected or Eye tracking on, with the inference provider in
+use.
 
-Start Calibrate and look at each of five targets for three seconds. Sampling starts
-after a settling interval. Lost tracking, too few samples, degenerate input or
-large fitting error rejects the calibration. Try the large phrase buttons first.
+Sit 40–60 cm from the screen and press Calibrate. A large preview appears first;
+centre your face until the dots sit on your eyes, and calibration starts once your
+face has been found for a second. Then look at each of nine dots while its ring
+fills. Time only counts while your face is tracked, so looking away pauses the dot
+rather than failing. The result reports the typical error as a share of the
+screen; calibrations worse than 25% are rejected. Try the large phrase buttons
+first.
 In Eye tracking a pointer follows the gaze. The calibration is kept across app
 restarts until the camera is stopped from Settings; recalibrate after repositioning
 the device or turning it the other way up.

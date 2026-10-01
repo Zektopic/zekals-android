@@ -4,6 +4,9 @@ import android.Manifest;
 import android.content.Context;
 import android.content.pm.PackageManager;
 import android.graphics.Bitmap;
+import android.graphics.Canvas;
+import android.graphics.Color;
+import android.graphics.Paint;
 import android.graphics.ImageFormat;
 import android.hardware.camera2.*;
 import android.media.Image;
@@ -19,7 +22,13 @@ import java.util.Collections;
 /** One camera worker, acquireLatestImage, 10 Hz ceiling, no frame queue or network. */
 final class CameraTracker implements AutoCloseable {
     /** Failures carry a language-pack key plus an English fallback. */
-    interface Listener { void sample(double[] point,long captured,String provider); void unavailable(String key,String fallback); }
+    interface Listener {
+        void sample(double[] point,long captured,String provider);
+        void unavailable(String key,String fallback);
+        /** A small upright, mirrored copy of what the model sees, with the eye landmarks drawn on it. */
+        void preview(Bitmap frame);
+    }
+    private static final long PREVIEW_MS=250,DIAGNOSTIC_MS=5000;
     private static final String TAG="zekALS";
     private final Context context;
     private final Listener listener;
@@ -38,6 +47,10 @@ final class CameraTracker implements AutoCloseable {
     private int rotation;
     private long lastFrame,lastTimestamp;
     private String providerNote="";
+    private long lastPreview,diagnosticStart;
+    private int frames,faces;
+    private double sumX,sumY,sumXX,sumYY;
+    private final Paint dot=new Paint(Paint.ANTI_ALIAS_FLAG);
     CameraTracker(Context context,String requested,int displayRotation,Listener listener){
         this.context=context.getApplicationContext();this.requested=requested;this.listener=listener;
         displayDegrees=displayRotation==Surface.ROTATION_90?90:displayRotation==Surface.ROTATION_180?180:displayRotation==Surface.ROTATION_270?270:0;
@@ -68,7 +81,9 @@ final class CameraTracker implements AutoCloseable {
             var map=characteristics.get(CameraCharacteristics.SCALER_STREAM_CONFIGURATION_MAP);
             if(map==null)throw new IllegalStateException("No capture formats");
             Size[] sizes=map.getOutputSizes(ImageFormat.YUV_420_888);if(sizes==null||sizes.length==0)throw new IllegalStateException("No YUV capture support");
-            Size size=sizes[0];for(Size candidate:sizes)if(Math.abs((long)candidate.getWidth()*candidate.getHeight()-320L*240)<Math.abs((long)size.getWidth()*size.getHeight()-320L*240))size=candidate;
+            // At 320x240 an eye is ~15 px wide, so landmark noise is as large as the gaze signal.
+            Size size=sizes[0];for(Size candidate:sizes)if(Math.abs((long)candidate.getWidth()*candidate.getHeight()-640L*480)<Math.abs((long)size.getWidth()*size.getHeight()-640L*480))size=candidate;
+            android.util.Log.i(TAG,"Camera "+selected+" capture "+size+", sensor "+orientation+"°, display "+displayDegrees+"°, image rotation "+rotation+"°");
             if(size.getWidth()>4096||size.getHeight()>4096)throw new IllegalArgumentException("Camera size exceeds bound");
             reader=ImageReader.newInstance(size.getWidth(),size.getHeight(),ImageFormat.YUV_420_888,2);
             reader.setOnImageAvailableListener(this::onImage,handler);
@@ -108,7 +123,28 @@ final class CameraTracker implements AutoCloseable {
                 estimator.close();estimator=new MediaPipeEstimator(context,false);point=estimator.predict(bitmap,++lastTimestamp);
             }
             if(active)listener.sample(point,now,estimator.provider()+providerNote);
+            diagnose(point,now,width,height);
+            if(now-lastPreview>=PREVIEW_MS&&active){lastPreview=now;listener.preview(preview(estimator.landmarks()));}
         }catch(Exception | LinkageError error){fail("trackingLost","Eye tracking stopped. Use touch, keyboard or switch access.",error);}
+    }
+    /** Logs detection rate and feature spread every few seconds; never message text or images. */
+    private void diagnose(double[] point,long now,int width,int height){
+        if(diagnosticStart==0)diagnosticStart=now;
+        frames++;if(point!=null){faces++;sumX+=point[0];sumY+=point[1];sumXX+=point[0]*point[0];sumYY+=point[1]*point[1];}
+        if(now-diagnosticStart<DIAGNOSTIC_MS)return;
+        double meanX=faces==0?0:sumX/faces,meanY=faces==0?0:sumY/faces;
+        double sdX=faces<2?0:Math.sqrt(Math.max(0,sumXX/faces-meanX*meanX)),sdY=faces<2?0:Math.sqrt(Math.max(0,sumYY/faces-meanY*meanY));
+        android.util.Log.i(TAG,String.format(java.util.Locale.ROOT,"tracking %dx%d rot %d: %d frames, %d with eyes, x %.3f±%.3f, y %.3f±%.3f, %s",width,height,rotation,frames,faces,meanX,sdX,meanY,sdY,estimator.provider()));
+        diagnosticStart=now;frames=0;faces=0;sumX=sumY=sumXX=sumYY=0;
+    }
+    private Bitmap preview(float[] landmarks){
+        int width=200,height=Math.max(1,Math.round(200f*bitmap.getHeight()/bitmap.getWidth()));
+        Bitmap frame=Bitmap.createScaledBitmap(bitmap,width,height,true);
+        if(landmarks!=null){
+            Canvas canvas=new Canvas(frame);dot.setStyle(Paint.Style.FILL);
+            for(int i=0;i+1<landmarks.length;i+=2){dot.setColor(i<4?Color.rgb(188,235,207):Color.rgb(255,221,133));canvas.drawCircle(landmarks[i]*width,landmarks[i+1]*height,i<4?3.5f:2f,dot);}
+        }
+        return frame;
     }
     @Override public synchronized void close(){
         if(closing)return;closing=true;active=false;

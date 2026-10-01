@@ -16,6 +16,8 @@ import java.util.List;
 interface GazeEstimator extends AutoCloseable {
     double[] predict(Bitmap bitmap,long timestamp) throws Exception;
     String provider();
+    /** Normalized x,y pairs of the last eye landmarks (iris centers first), or null. */
+    default float[] landmarks(){return null;}
     @Override void close();
 }
 
@@ -23,6 +25,8 @@ final class MediaPipeEstimator implements GazeEstimator {
     private static final String CHECKSUM="64184e229b263107bc2b804c6625db1341ff2bb731874b0bcc2fe6544e0bc9ff";
     private final FaceLandmarker landmarker;
     private final String provider;
+    private static final int[] SHOWN={468,473,33,133,159,145,362,263,386,374};
+    private volatile float[] lastLandmarks;
     MediaPipeEstimator(Context context,boolean gpu) throws Exception {
         verify(context,"face_landmarker.task",CHECKSUM);
         FaceLandmarker instance;
@@ -34,8 +38,8 @@ final class MediaPipeEstimator implements GazeEstimator {
     private static FaceLandmarker create(Context context,Delegate delegate) {
         return FaceLandmarker.createFromOptions(context,FaceLandmarker.FaceLandmarkerOptions.builder()
             .setBaseOptions(BaseOptions.builder().setModelAssetPath("face_landmarker.task").setDelegate(delegate).build())
-            .setRunningMode(RunningMode.VIDEO).setNumFaces(1).setMinFaceDetectionConfidence(.7f)
-            .setMinFacePresenceConfidence(.7f).setMinTrackingConfidence(.7f).build());
+            .setRunningMode(RunningMode.VIDEO).setNumFaces(1).setMinFaceDetectionConfidence(.5f)
+            .setMinFacePresenceConfidence(.5f).setMinTrackingConfidence(.5f).build());
     }
     static void verify(Context context,String asset,String expected) throws Exception {
         MessageDigest digest=MessageDigest.getInstance("SHA-256");
@@ -51,8 +55,9 @@ final class MediaPipeEstimator implements GazeEstimator {
         MPImage image=new BitmapImageBuilder(bitmap.copy(Bitmap.Config.ARGB_8888,false)).build();
         try {
             var result=landmarker.detectForVideo(image,timestamp);
-            if(result.faceLandmarks().isEmpty())return null;
-            List<NormalizedLandmark> points=result.faceLandmarks().get(0);if(points.size()<478)return null;
+            if(result.faceLandmarks().isEmpty()){lastLandmarks=null;return null;}
+            List<NormalizedLandmark> points=result.faceLandmarks().get(0);if(points.size()<478){lastLandmarks=null;return null;}
+            float[] shown=new float[SHOWN.length*2];for(int i=0;i<SHOWN.length;i++){shown[2*i]=points.get(SHOWN[i]).x();shown[2*i+1]=points.get(SHOWN[i]).y();}lastLandmarks=shown;
             double x=0,y=0;
             int[][] eyes={{468,33,133,159,145},{473,362,263,386,374}};
             for(int[] eye:eyes){
@@ -66,5 +71,6 @@ final class MediaPipeEstimator implements GazeEstimator {
         } finally { image.close(); }
     }
     @Override public String provider(){return provider;}
+    @Override public float[] landmarks(){return lastLandmarks;}
     @Override public void close(){landmarker.close();}
 }

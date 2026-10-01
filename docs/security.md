@@ -19,8 +19,9 @@ backups and device transfer are excluded using both legacy and modern Android
 configuration. Preferences contain access, language, voice and camera settings and
 the six calibration coefficients with the screen size and rotation they belong to;
 stopping the camera from Settings deletes the calibration. Process death clears the
-draft. Logs record camera and model failures with their exceptions, never message
-text. Screen capture, a trusted accessibility service or an
+draft. Logs record camera and model failures with their exceptions, detection
+rates and eye-feature statistics, never message text or images. The camera preview
+is drawn on screen only and is never stored. Screen capture, a trusted accessibility service or an
 installed TTS engine can observe on-screen/spoken text and remain separate trust
 boundaries. The chosen voice must be local and already installed.
 
