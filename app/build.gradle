@@ -2,7 +2,7 @@ plugins { id 'com.android.application' }
 android {
     namespace 'org.zektopic.zekals'
     compileSdk 35
-    ndkVersion '28.0.13004108'
+    ndkVersion '28.2.13676358'
     defaultConfig {
         applicationId 'org.zektopic.zekals'
         minSdk 26
@@ -31,6 +31,25 @@ android {
     lint { abortOnError true }
 }
 dependencies {
+    // tasks-core always constructs a datatransport (Clearcut) usage logger; FaceLandmarker fails with
+    // NoClassDefFoundError if that library is excluded. INTERNET is removed, so it cannot upload.
     visionImplementation 'com.google.mediapipe:tasks-vision:1.0.0'
     visionImplementation 'com.microsoft.onnxruntime:onnxruntime-android:1.30.0'
 }
+
+// The face model is not committed. Without this check a Vision APK builds fine and then
+// can only report "eye tracking could not start" on every device.
+def visionModel = file('src/vision/assets/face_landmarker.task')
+def verifyVisionModel = tasks.register('verifyVisionModel') {
+    inputs.file(visionModel).optional()
+    doLast {
+        if (!visionModel.isFile()) throw new GradleException("Missing ${visionModel}. Run: python3 scripts/download_model.py")
+        def actual = java.security.MessageDigest.getInstance('SHA-256').digest(visionModel.bytes).encodeHex().toString()
+        // Keep in sync with scripts/download_model.py and MediaPipeEstimator.CHECKSUM.
+        if (actual != '64184e229b263107bc2b804c6625db1341ff2bb731874b0bcc2fe6544e0bc9ff') {
+            throw new GradleException("face_landmarker.task checksum mismatch (${actual}). Re-run scripts/download_model.py")
+        }
+    }
+}
+// Asset merging is Vision-only; pre-build tasks are also reached from Lite through the shared CMake build.
+tasks.configureEach { if (it.name ==~ /mergeVision(Debug|Release)Assets/) it.dependsOn(verifyVisionModel) }

@@ -1,0 +1,4 @@
+<resources>
+    <!-- Shown only when the bundled language packs cannot be read, so no pack text is available. -->
+    <string name="languages_failed">Language assets could not be loaded. Please reinstall the app.</string>
+</resources>

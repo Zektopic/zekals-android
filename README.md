@@ -24,21 +24,26 @@ NNAPI selection is not proof of NPU execution.
 
 - Native controls with large touch targets, font scaling, high contrast, visible
   selection, pause, undo, fixed scrolling controls and access-mode settings.
-- English, French, Simplified Chinese, Italian and Sinhala packs; Greek retained.
+- Landscape-only board; wide screens show the keyboard beside the message so the
+  whole board fits. Single-switch scanning is row/column.
+- English, French, Simplified Chinese, Italian, Sinhala and Greek packs.
   Language assets share the desktop format and can be extended without Java edits.
 - Installed offline voices, language matching, quality-based voice ordering,
   speed control and immediate stop. No cloud API key or bundled voice is required.
 - A C++/JNI core with validated buffers, strided YUV conversion, rotation/mirroring,
   time-based filtering and selection that fires once per entry.
 - Vision captures the latest frame, caps inference at 10 Hz, reduces it under
-  thermal pressure, cancels stale input and calibrates before gaze selection.
+  thermal pressure, cancels stale input and calibrates before gaze selection. A
+  pointer shows where the user is looking, with dwell progress as a ring.
 - No application internet permission, background camera service, conversation
   logging or message backup. Models are a deliberate build-time installation.
+  MediaPipe's built-in usage logger remains but cannot upload; see
+  [security](docs/security.md).
 
 ## Build
 
 Install JDK 17 and the Android SDK, including API 35, Build Tools 35.0.0,
-NDK 28.0.13004108 and CMake 3.22.1. Set `ANDROID_HOME` to the SDK directory.
+NDK 28.2.13676358 and CMake 3.22.1. Set `ANDROID_HOME` to the SDK directory.
 
 ```bash
 ./gradlew :app:assembleLiteDebug :app:lintLiteDebug

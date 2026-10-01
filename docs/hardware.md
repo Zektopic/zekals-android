@@ -5,10 +5,10 @@
 | Target | Implementation | Validation status |
 | --- | --- | --- |
 | ARMv7 Android | Lite native UI, speech and C++ core | Baseline APK compiled; device testing pending |
-| ARM64 Android | Lite or Vision | Baseline JNI/APK compiled; final Vision/device testing pending |
+| ARM64 Android | Lite or Vision | Lite and Vision (debug and R8 release) run on a Lenovo Tab M11 (Android 15); the original branch was also tested on a Redmi Note 13 (Android 16); see [validation](validation.md) |
 | x86_64 Android | Lite or Vision/emulator | Baseline JNI/APK compiled; final Vision/emulator testing pending |
-| CPU inference | MediaPipe Face Landmarker | Source integrated; Android camera/model test pending |
-| GPU inference | Actual MediaPipe GPU delegate, CPU fallback | Depends on EGL/driver/runtime; hardware test pending |
+| CPU inference | MediaPipe Face Landmarker | Runs continuously on the Lenovo Tab M11 (and on the Redmi Note 13 with the frame fix); gaze accuracy not yet measured |
+| GPU inference | Actual MediaPipe GPU delegate, CPU fallback | Delegate initialised and ran on the Lenovo Tab M11; other GPUs untested |
 | GPU/NPU via NNAPI | Optional ONNX Runtime NNAPI request | Custom compatible model required; device assignment and accuracy unverified |
 | Qualcomm QNN / vendor NPU SDKs | No direct adapter bundled | Future work; do not advertise native vendor support |
 
