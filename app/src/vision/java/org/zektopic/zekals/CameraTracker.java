@@ -25,7 +25,8 @@ import java.util.Collections;
 final class CameraTracker implements AutoCloseable {
     /** Failures carry a language-pack key plus an English fallback. */
     interface Listener {
-        void sample(double[] point,long captured,String provider);
+        /** blink: 0 open to 1 closed, NaN when no face; eyes can be closed while point is null. */
+        void sample(double[] point,long captured,String provider,double blink);
         void unavailable(String key,String fallback);
         /** A small upright, mirrored copy of what the model sees, with the eye landmarks drawn on it. */
         void preview(Bitmap frame);
@@ -51,7 +52,7 @@ final class CameraTracker implements AutoCloseable {
     private String providerNote="";
     private long lastPreview,diagnosticStart;
     private int frames,faces;
-    private final double[] sums=new double[4],squares=new double[4];
+    private final double[] sums=new double[7],squares=new double[7];
     private CameraCharacteristics cameraInfo;
     private CaptureRequest.Builder request;
     /**
@@ -140,7 +141,7 @@ final class CameraTracker implements AutoCloseable {
                 if(!(estimator instanceof MediaPipeEstimator))throw accelerationFailure;
                 estimator.close();estimator=new MediaPipeEstimator(context,false);point=estimator.predict(frame,++lastTimestamp);
             }
-            if(active)listener.sample(point,now,estimator.provider()+providerNote);
+            if(active)listener.sample(point,now,estimator.provider()+providerNote,estimator.blink());
             followFace(point==null?null:estimator.landmarks(),now);
             searchRotation(point!=null,now);
             diagnose(point,now,width,height);
@@ -151,10 +152,10 @@ final class CameraTracker implements AutoCloseable {
     /** Logs detection rate and feature spread every few seconds; never message text or images. */
     private void diagnose(double[] point,long now,int width,int height){
         if(diagnosticStart==0)diagnosticStart=now;
-        frames++;if(point!=null){faces++;for(int i=0;i<Math.min(4,point.length);i++){sums[i]+=point[i];squares[i]+=point[i]*point[i];}}
+        frames++;if(point!=null){faces++;for(int i=0;i<Math.min(sums.length,point.length);i++){sums[i]+=point[i];squares[i]+=point[i]*point[i];}}
         if(now-diagnosticStart<DIAGNOSTIC_MS)return;
-        StringBuilder stats=new StringBuilder();String[] names={"eyeX","eyeY","headX","headY"};
-        for(int i=0;i<4&&faces>0;i++){double mean=sums[i]/faces,sd=faces<2?0:Math.sqrt(Math.max(0,squares[i]/faces-mean*mean));stats.append(String.format(java.util.Locale.ROOT,", %s %.3f±%.3f",names[i],mean,sd));}
+        StringBuilder stats=new StringBuilder();String[] names=MediaPipeEstimator.FEATURES;
+        for(int i=0;i<names.length&&faces>0;i++){double mean=sums[i]/faces,sd=faces<2?0:Math.sqrt(Math.max(0,squares[i]/faces-mean*mean));stats.append(String.format(java.util.Locale.ROOT,", %s %.3f±%.3f",names[i],mean,sd));}
         float zoom=usedWidth<=0?1:bitmap.getWidth()/(float)usedWidth;
         android.util.Log.i(TAG,String.format(java.util.Locale.ROOT,"tracking %dx%d rot %d zoom %.2fx: %d frames, %d with eyes%s, %s",width,height,rotation,zoom,frames,faces,stats,estimator.provider()));
         diagnosticStart=now;frames=0;faces=0;java.util.Arrays.fill(sums,0);java.util.Arrays.fill(squares,0);

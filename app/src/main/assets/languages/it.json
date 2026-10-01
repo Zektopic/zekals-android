@@ -153,7 +153,10 @@
     "settingsBack": "Torna alla tabella",
     "facePosition": "Centra il viso nell’inquadratura. La calibrazione inizia quando il viso viene rilevato.",
     "calibrationQuality": "Calibrazione salvata. Errore tipico: {error}% dello schermo.",
-    "cameraPreview": "Vista della fotocamera"
+    "cameraPreview": "Vista della fotocamera",
+    "blinkSelectOn": "Selezione con battito di ciglia: attiva",
+    "blinkSelectOff": "Selezione con battito di ciglia: disattiva",
+    "blinkTime": "Durata del battito di ciglia"
   },
   "speech": {
     "locale": "it-IT",

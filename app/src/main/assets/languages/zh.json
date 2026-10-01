@@ -185,7 +185,10 @@
     "settingsBack": "返回主界面",
     "facePosition": "请将脸部置于画面中央。检测到脸部后开始校准。",
     "calibrationQuality": "校准已保存。典型误差：屏幕的 {error}%。",
-    "cameraPreview": "摄像头画面"
+    "cameraPreview": "摄像头画面",
+    "blinkSelectOn": "眨眼选择：开",
+    "blinkSelectOff": "眨眼选择：关",
+    "blinkTime": "眨眼时长"
   },
   "speech": {
     "locale": "zh-CN",

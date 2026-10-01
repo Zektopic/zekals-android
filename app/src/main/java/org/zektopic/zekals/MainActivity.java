@@ -33,6 +33,7 @@ import android.text.InputFilter;
 import android.text.TextUtils;
 import android.text.TextWatcher;
 import android.view.KeyEvent;
+import android.view.SoundEffectConstants;
 import android.view.MotionEvent;
 import android.view.View;
 import android.view.WindowManager;
@@ -82,6 +83,11 @@ public final class MainActivity extends Activity {
     /** Head pose held when the face was first found; the uncalibrated pointer moves relative to it. */
     private final double[] neutralHead = new double[2];
     private int neutralSamples, restarts;
+    /** Blink to select: a deliberate closure between blinkMillis and BLINK_MAX_MS presses what the pointer is on. */
+    private boolean blinkSelect = true;
+    private long blinkMillis = 600, closedSince;
+    private float[] blinkGaze;
+    private static final long BLINK_MAX_MS = 2500;
     private long restartWindow;
     private static final double HEAD_GAIN_X = 5, HEAD_GAIN_Y = 6;
     private final Runnable restartCamera = this::restartCameraIfWanted;
@@ -102,8 +108,8 @@ public final class MainActivity extends Activity {
     private volatile long cameraGeneration;
     private long lastGazeTime;
     private static final class CameraSample {
-        final double[] point; final long captured, generation; final String provider;
-        CameraSample(double[] p,long c,String name,long g){point=p;captured=c;provider=name;generation=g;}
+        final double[] point; final long captured, generation; final String provider; final double blink;
+        CameraSample(double[] p,long c,String name,long g,double b){point=p;captured=c;provider=name;generation=g;blink=b;}
     }
     /** Survives rotation in-process only; messages are never written to storage. */
     private static final class Retained {
@@ -121,6 +127,11 @@ public final class MainActivity extends Activity {
     private final List<double[]> calibrationSamples = new ArrayList<>();
     /** Nine points, centre first, then around the edges so the eyes cannot anticipate the next one. */
     private final double[][] calibrationTargets = {{.5,.5},{.1,.12},{.9,.12},{.9,.88},{.1,.88},{.5,.12},{.9,.5},{.5,.88},{.1,.5}};
+    /** The targets in whole-surface fractions (the gaze mapping's coordinates), laid out inside the system bars. */
+    private double[][] calibrationPositions;
+    private Button calibrationCancel;
+    /** MediaPipe features (eyeX, eyeY, headX, headY, lookX, lookY, open): x and y use different cues. */
+    private static final int[] GAZE_X = {0, 2, 4}, GAZE_Y = {1, 3, 5, 6};
     private static final long TARGET_MS = 2500, SETTLE_MS = 800, FACE_LOST_MS = 10000;
     /** Fits worse than this (as a fraction of the screen) are not usable even for large buttons. */
     private static final double CALIBRATION_CEILING = .25;
@@ -131,6 +142,7 @@ public final class MainActivity extends Activity {
         large = preferences.getBoolean("large", false); contrast = preferences.getBoolean("contrast", false);
         dwellMillis = preferences.getLong("dwell", 1200); scanMillis = preferences.getLong("scan", 1400);
         speechRate = preferences.getFloat("rate", .9f);
+        blinkSelect = preferences.getBoolean("blink", true); blinkMillis = preferences.getLong("blinkTime", 600);
         mode = preferences.getInt("mode", 0); if (mode < 0 || mode > 3 || (mode == 3 && !BuildConfig.CAMERA_AVAILABLE)) mode = 0;
         requestedProvider = preferences.getString("provider", "CPU"); if (!Arrays.asList("CPU","GPU","NNAPI").contains(requestedProvider)) requestedProvider = "CPU";
         cameraWanted = BuildConfig.CAMERA_AVAILABLE && preferences.getBoolean("camera", false);
@@ -167,7 +179,7 @@ public final class MainActivity extends Activity {
     private void save() {
         preferences.edit().putString("language", pack.code).putBoolean("large", large).putBoolean("contrast", contrast)
             .putLong("dwell", dwellMillis).putLong("scan", scanMillis).putFloat("rate", speechRate).putInt("mode", mode)
-            .putString("provider", requestedProvider).putBoolean("camera", cameraWanted).apply();
+            .putString("provider", requestedProvider).putBoolean("camera", cameraWanted).putBoolean("blink", blinkSelect).putLong("blinkTime", blinkMillis).apply();
     }
     private void notice(String text) { if (status != null && !status.getText().toString().equals(text)) status.setText(text); }
     private void cameraText(String text) { cameraText = text; if (cameraStatus != null && !cameraStatus.getText().toString().equals(text)) cameraStatus.setText(text); }
@@ -197,6 +209,10 @@ public final class MainActivity extends Activity {
     }
     private void grid(LinearLayout parent, List<Button> entries, int columns) {
         for (int i=0; i<entries.size(); i+=columns) row(parent, entries.subList(i, Math.min(entries.size(), i+columns)).toArray(new Button[0]));
+    }
+    /** A character key; combining signs show on a dotted circle and the joiner gets a word label. */
+    private Button keyButton(String key) {
+        return button(key.equals("\u200d") ? t("joinLetters","Join letters") : key.matches("\\p{M}+") ? "◌"+key : key, () -> append(key));
     }
     /** A labelled value with − and + buttons; the value stays visible in Settings. */
     private void stepper(LinearLayout panel, String name, Supplier<String> value, Runnable down, Runnable up) {
@@ -238,19 +254,15 @@ public final class MainActivity extends Activity {
         messagePreview.setImportantForAccessibility(View.IMPORTANT_FOR_ACCESSIBILITY_NO); root.addView(messagePreview);
         scroll = new ScrollView(this); root.addView(scroll, new LinearLayout.LayoutParams(-1,0,1));
         scroll.setOnScrollChangeListener((v, x, y, oldX, oldY) -> updatePreview());
-        content = new LinearLayout(this); content.setOrientation(wide ? LinearLayout.HORIZONTAL : LinearLayout.VERTICAL); content.setBaselineAligned(false); scroll.addView(content);
-        LinearLayout left = content, right = content;
-        if (wide) {
-            left = new LinearLayout(this); left.setOrientation(LinearLayout.VERTICAL); content.addView(left, new LinearLayout.LayoutParams(0, -2, 1));
-            right = new LinearLayout(this); right.setOrientation(LinearLayout.VERTICAL); content.addView(right, new LinearLayout.LayoutParams(0, -2, 1));
-        }
-        TextView heading = label(t("messageTitle","What would you like to say?"),24); if(android.os.Build.VERSION.SDK_INT>=28)heading.setAccessibilityHeading(true); left.addView(heading);
+        content = new LinearLayout(this); content.setOrientation(LinearLayout.VERTICAL); scroll.addView(content);
+        // On wide screens the keyboard rows share all the height left over, so keys are as large as possible.
+        scroll.setFillViewport(wide);
         message = new EditText(this); message.setId(View.generateViewId()); message.setText(lastMessage); message.setSelection(message.length());
         message.setSaveEnabled(false); message.setTextColor(INK); message.setHintTextColor(Color.LTGRAY); message.setTextSize(large ? 28 : 24);
         message.setHint(t("textPlaceholder","Write a message")); message.setContentDescription(t("messageLabel","Your message")); message.setMinLines(wide ? 2 : 3);
         message.setInputType(android.text.InputType.TYPE_CLASS_TEXT | android.text.InputType.TYPE_TEXT_FLAG_MULTI_LINE | android.text.InputType.TYPE_TEXT_FLAG_CAP_SENTENCES);
         message.setFilters(new InputFilter[]{new InputFilter.LengthFilter(2000)}); message.setBackground(background(contrast ? Color.BLACK : SURFACE));
-        message.setPadding(dp(14),dp(14),dp(14),dp(14)); message.setTextLocale(pack.locale); left.addView(message);
+        message.setPadding(dp(14),dp(14),dp(14),dp(14)); message.setTextLocale(pack.locale);
         message.addTextChangedListener(new TextWatcher() {
             public void beforeTextChanged(CharSequence s,int start,int count,int after) {}
             public void onTextChanged(CharSequence s,int start,int before,int count) {}
@@ -260,25 +272,55 @@ public final class MainActivity extends Activity {
             }
         });
         Button speak = button(t("speak","Speak"), this::speak); speak.setBackground(background(ACCENT)); speak.setTextColor(BG); speak.setTag(true);
-        row(left, speak, button(t("stop","Stop"), () -> { stopSpeech(); notice(t("stopped","Speech stopped.")); }));
-        row(left, button(t("undo","Undo"), () -> { if (!undo.isEmpty()) { changing=true; message.setText(undo.removeLast()); message.setSelection(message.length()); changing=false; } }), button(t("clear","Clear"), () -> message.setText("")));
-        boolean spaced = false;
+        Button stop = button(t("stop","Stop"), () -> { stopSpeech(); notice(t("stopped","Speech stopped.")); });
+        Button undoButton = button(t("undo","Undo"), () -> { if (!undo.isEmpty()) { changing=true; message.setText(undo.removeLast()); message.setSelection(message.length()); changing=false; } });
+        Button clear = button(t("clear","Clear"), () -> message.setText(""));
+        Button space = button(t("space","Space"), () -> append(" ")), delete = button(t("backspace","Delete"), this::backspace);
+        Button settings = button(t("settings","Settings"), () -> showSettings(true));
+        if (wide) {
+            // Message beside its actions, so the height goes to the keyboard.
+            LinearLayout top = new LinearLayout(this); top.setOrientation(LinearLayout.HORIZONTAL); top.setBaselineAligned(false); content.addView(top);
+            LinearLayout.LayoutParams box = new LinearLayout.LayoutParams(0, -1, 2); box.setMargins(dp(4),dp(4),dp(4),dp(4)); top.addView(message, box);
+            LinearLayout actions = new LinearLayout(this); actions.setOrientation(LinearLayout.VERTICAL); top.addView(actions, new LinearLayout.LayoutParams(0, -2, 1));
+            row(actions, speak, stop); row(actions, undoButton, clear);
+        } else {
+            TextView heading = label(t("messageTitle","What would you like to say?"),24); if(android.os.Build.VERSION.SDK_INT>=28)heading.setAccessibilityHeading(true); content.addView(heading);
+            content.addView(message); row(content, speak, stop); row(content, undoButton, clear);
+        }
+        boolean keyboard = false;
         try {
-            left.addView(label(t("phrases","Everyday phrases"),22));
             List<Button> phraseButtons = new ArrayList<>();
             for (String phrase : pack.phrases()) phraseButtons.add(button(phrase, () -> append((message.length()>0 ? " " : "") + phrase)));
-            grid(left, phraseButtons, columnDp >= 600 ? 4 : 2);
+            if (!wide) content.addView(label(t("phrases","Everyday phrases"),22));
+            grid(content, phraseButtons, wide ? Math.min(8, phraseButtons.size()) : columnDp >= 600 ? 4 : 2);
             List<List<String>> pages = pack.pages(); keyboardPage %= pages.size();
             Button more = button(t("moreKeys","More characters") + " " + (keyboardPage+1) + "/" + pages.size(), () -> { keyboardPage++; render(); });
             Button language = button(pack.name + " ›", () -> { stopSpeech(); languageIndex=(languageIndex+1)%packs.size(); pack=packs.get(languageIndex); keyboardPage=0; save(); refreshVoices(); render(); });
-            if (!wide) row(left, more, language);
-            List<Button> keys = new ArrayList<>();
-            for (String key : pages.get(keyboardPage)) keys.add(button(key.equals("‍") ? t("joinLetters","Join letters") : key.matches("\\p{M}+") ? "◌"+key : key, () -> append(key)));
-            grid(right, keys, columnDp >= 600 ? 10 : 5);
-            if (wide) { row(right, button(t("space","Space"), () -> append(" ")), button(t("backspace","Delete"), this::backspace)); row(right, more, language); spaced = true; }
+            if (wide) {
+                LinearLayout board = new LinearLayout(this); board.setOrientation(LinearLayout.VERTICAL); content.addView(board, new LinearLayout.LayoutParams(-1, 0, 1));
+                List<List<String>> rows = pack.rows(keyboardPage);
+                // Rows stretch to fill the height; busy pages (e.g. 42 Sinhala signs in four rows) get a
+                // slightly smaller glyph and padding so every row still fits without scrolling.
+                int glyph = (rows.size() >= 4 ? 26 : 30) + (large ? 6 : 0);
+                for (List<String> keys : rows) {
+                    List<Button> line = new ArrayList<>();
+                    for (String key : keys) {
+                        Button view = keyButton(key); view.setMinHeight(dp(52));
+                        if (rows.size() >= 4) view.setPadding(dp(6),dp(2),dp(6),dp(2));
+                        if (key.codePointCount(0, key.length()) <= 2) view.setTextSize(glyph); else if (rows.size() >= 4) view.setTextSize(large ? 20 : 16);
+                        line.add(view);
+                    }
+                    row(board, line.toArray(new Button[0])).setLayoutParams(new LinearLayout.LayoutParams(-1, 0, 1));
+                }
+                row(board, more, space, delete, language, settings).setLayoutParams(new LinearLayout.LayoutParams(-1, 0, 1));
+            } else {
+                row(content, more, language);
+                List<Button> keys = new ArrayList<>(); for (String key : pages.get(keyboardPage)) keys.add(keyButton(key));
+                grid(content, keys, columnDp >= 600 ? 10 : 5);
+            }
+            keyboard = wide;
         } catch (Exception error) { Log.w(TAG, "Keyboard pack is invalid: " + pack.code, error); notice(t("keyboardInvalid","This keyboard could not be loaded.")); }
-        if (!spaced) row(right, button(t("space","Space"), () -> append(" ")), button(t("backspace","Delete"), this::backspace));
-        row(wide ? right : left, button(t("settings","Settings"), () -> showSettings(true)));
+        if (!keyboard) { row(content, space, delete); row(content, settings); }
         // Settings is a separate page: the board is hidden so scanning and gaze only reach visible buttons.
         settingsScroll = new ScrollView(this); root.addView(settingsScroll, new LinearLayout.LayoutParams(-1,0,1));
         settingsPanel = new LinearLayout(this); settingsPanel.setOrientation(LinearLayout.VERTICAL); settingsScroll.addView(settingsPanel);
@@ -293,6 +335,10 @@ public final class MainActivity extends Activity {
         stepper(access, t("dwellTime","Dwell time"), () -> dwellMillis + " ms", () -> dwellMillis=Math.max(500,dwellMillis-100), () -> dwellMillis=Math.min(3000,dwellMillis+100));
         stepper(access, t("scanTime","Scan interval"), () -> scanMillis + " ms", () -> scanMillis=Math.max(600,scanMillis-200), () -> scanMillis=Math.min(4000,scanMillis+200));
         row(access,button(t("textSize","Text size"), () -> { large=!large; save(); render(); }), button(t("contrast","Contrast"), () -> { contrast=!contrast; save(); render(); }));
+        Button blinkButton = button(blinkSelect ? t("blinkSelectOn","Blink to select: on") : t("blinkSelectOff","Blink to select: off"), () -> {});
+        blinkButton.setOnClickListener(v -> { blinkSelect = !blinkSelect; save(); blinkButton.setText(blinkSelect ? t("blinkSelectOn","Blink to select: on") : t("blinkSelectOff","Blink to select: off")); notice(blinkButton.getText().toString()); });
+        row(access, blinkButton);
+        stepper(access, t("blinkTime","Blink length"), () -> blinkMillis + " ms", () -> blinkMillis=Math.max(300,blinkMillis-100), () -> blinkMillis=Math.min(2000,blinkMillis+100));
         access.addView(label(t("scanHelp","Press Space to choose the highlighted button. Escape pauses."),18));
         stepper(output, t("speechSpeed","Speech speed"), () -> String.format(pack.locale,"%.1f×",speechRate), () -> speechRate=Math.max(.5f,Math.round((speechRate-.1f)*10)/10f), () -> speechRate=Math.min(1.5f,Math.round((speechRate+.1f)*10)/10f));
         voiceValue = label(t("voice","Voice") + ": " + (voices.isEmpty() ? "—" : voiceLabel(voiceIndex)), 18); output.addView(voiceValue);
@@ -352,7 +398,9 @@ public final class MainActivity extends Activity {
     private void deliverGazeSample() {
         CameraSample sample=pendingCameraSample;if(sample==null||sample.generation!=cameraGeneration||!running)return;
         long now=SystemClock.uptimeMillis();boolean valid=sample.point!=null&&now-sample.captured<=500;
-        long previousGaze=lastGazeTime;lastGazeTime=valid?sample.captured:0;
+        if(!Double.isNaN(sample.blink))blink(sample.blink>.5,sample.captured);
+        // A blink or a dropped frame keeps the last gaze; recency (500 ms) decides when it is stale.
+        long previousGaze=lastGazeTime;if(valid)lastGazeTime=sample.captured;
         // Calibration learns from the raw eye features; the pointer is smoothed after mapping,
         // because the native filter only accepts screen fractions in [0,1].
         if(valid&&calibration!=null&&calibration.dimensions()!=sample.point.length){
@@ -363,8 +411,7 @@ public final class MainActivity extends Activity {
         if(valid&&sample.captured-previousGaze>3000)neutralSamples=0;
         double[] mapped=!valid?null:calibration!=null?calibration.map(sample.point):headPointer(sample.point);
         if(mapped!=null)NativeCore.smooth(gazeState,mapped[0],mapped[1],sample.captured,120,true);
-        else NativeCore.smooth(gazeState,0,0,sample.captured,120,false);
-        if(!valid){if(mode==3)resetDwell();cameraText(t("cameraNoFace","No face detected")+" · "+sample.provider);return;}
+        if(!valid){if(now-lastGazeTime>500)cameraText(t("cameraNoFace","No face detected")+" · "+sample.provider);return;}
         if(calibrationIndex>=0&&!calibrationPositioning&&calibrationTracked>=SETTLE_MS)calibrationPoints.add(sample.point.clone());
         cameraText(t("cameraTracking","Eye tracking on")+" · "+sample.provider);
     }
@@ -382,6 +429,20 @@ public final class MainActivity extends Activity {
         }
         return new double[]{Math.max(0,Math.min(1,.5+(features[2]-neutralHead[0])*HEAD_GAIN_X)),Math.max(0,Math.min(1,.5+(features[3]-neutralHead[1])*HEAD_GAIN_Y))};
     }
+    /** Tracks eye closure; a deliberate blink presses what the pointer is on, or the scanned row/button. */
+    private void blink(boolean closed,long time){
+        if(!blinkSelect||calibrationIndex>=0){closedSince=0;return;}
+        if(closed){if(closedSince==0){closedSince=time;blinkGaze=easedGaze==null?null:easedGaze.clone();}return;}
+        if(closedSince==0)return;
+        long held=time-closedSince;closedSince=0;
+        // Natural blinks are shorter; closing the eyes to rest is longer. Neither presses anything.
+        if(held<blinkMillis||held>BLINK_MAX_MS)return;
+        Log.i(TAG,"Blink select after "+held+" ms");
+        if(mode==2){if(paused)setPaused(false);else scanSelect();return;}
+        int target=gazeTarget(blinkGaze);
+        if(target<0||(paused&&target!=pauseButton.getId()))return;
+        for(Button button:buttons)if(button.getId()==target&&button.isShown()){button.playSoundEffect(SoundEffectConstants.CLICK);blockedTarget=target;button.performClick();break;}
+    }
     private void restartCameraIfWanted(){if(running&&cameraWanted&&cameraTracker==null&&checkSelfPermission(Manifest.permission.CAMERA)==PackageManager.PERMISSION_GRANTED)startCamera();}
     private void startCamera(){
         stopCamera(false);long generation=++cameraGeneration;cameraRotation=displayRotation();
@@ -389,8 +450,8 @@ public final class MainActivity extends Activity {
         getWindow().addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON);
         cameraText(t("cameraStarting","Starting camera…"));if(cameraPreview!=null)cameraPreview.setVisibility(View.VISIBLE);
         cameraTracker=new CameraTracker(this,requestedProvider,cameraRotation,new CameraTracker.Listener(){
-            public void sample(double[] point,long captured,String provider){
-                pendingCameraSample=new CameraSample(point,captured,provider,generation);
+            public void sample(double[] point,long captured,String provider,double blink){
+                pendingCameraSample=new CameraSample(point,captured,provider,generation,blink);
                 handler.removeCallbacks(deliverGaze);handler.post(deliverGaze);
             }
             public void preview(Bitmap frame){runOnUiThread(()->{
@@ -418,9 +479,9 @@ public final class MainActivity extends Activity {
     private void restoreCalibration(){
         String stored=preferences.getString("calibration",null);if(stored==null)return;
         try{
-            // Coefficients for both axes, then width, height and rotation.
-            String[] parts=stored.split(",");int count=parts.length-3;double[] values=new double[count];for(int i=0;i<count;i++)values[i]=Double.parseDouble(parts[i]);
-            calibration=Calibration.restore(values);calibrationWidth=Integer.parseInt(parts[count]);calibrationHeight=Integer.parseInt(parts[count+1]);calibrationRotation=Integer.parseInt(parts[count+2]);
+            // The calibration's own text, then width, height and rotation; older formats are discarded.
+            String[] parts=stored.split("\\|");String[] screen=parts[1].split(",");
+            calibration=Calibration.decode(parts[0]);calibrationWidth=Integer.parseInt(screen[0]);calibrationHeight=Integer.parseInt(screen[1]);calibrationRotation=Integer.parseInt(screen[2]);
         }catch(RuntimeException error){Log.w(TAG,"Discarding stored calibration",error);calibration=null;preferences.edit().remove("calibration").apply();}
     }
     private void startCalibration(){
@@ -438,10 +499,10 @@ public final class MainActivity extends Activity {
         calibrationOverlay.addView(calibrationPreview,new FrameLayout.LayoutParams(dp(360),dp(270),android.view.Gravity.CENTER));
         calibrationTarget=new CalibrationTarget();calibrationTarget.setVisibility(View.GONE);calibrationOverlay.addView(calibrationTarget,new FrameLayout.LayoutParams(dp(72),dp(72)));
         Button cancel=new Button(this);cancel.setText(t("cancelCalibration","Cancel calibration"));cancel.setAllCaps(false);cancel.setTextSize(19);cancel.setTextColor(INK);cancel.setBackground(background(SURFACE));cancel.setMinHeight(dp(64));cancel.setPadding(dp(24),0,dp(24),0);cancel.setOnClickListener(v->{cancelCalibration();notice(t("ready","Ready when you are."));});
-        FrameLayout.LayoutParams cancelPosition=new FrameLayout.LayoutParams(-2,dp(64),android.view.Gravity.BOTTOM|android.view.Gravity.CENTER_HORIZONTAL);cancelPosition.bottomMargin=dp(30);calibrationOverlay.addView(cancel,cancelPosition);
+        FrameLayout.LayoutParams cancelPosition=new FrameLayout.LayoutParams(-2,dp(64),android.view.Gravity.BOTTOM|android.view.Gravity.CENTER_HORIZONTAL);cancelPosition.bottomMargin=dp(30);calibrationOverlay.addView(cancel,cancelPosition);calibrationCancel=cancel;
     }
     private void cancelCalibration(){
-        calibrationIndex=-1;calibrationPositioning=false;calibrationPoints.clear();calibrationPreview=null;calibrationTarget=null;
+        calibrationIndex=-1;calibrationPositioning=false;calibrationPoints.clear();calibrationPreview=null;calibrationTarget=null;calibrationCancel=null;
         if(calibrationOverlay!=null&&surface!=null)surface.removeView(calibrationOverlay);calibrationOverlay=null;
     }
     /** Runs every tick during calibration: time on a target only counts while the face is tracked. */
@@ -451,7 +512,7 @@ public final class MainActivity extends Activity {
         calibrationStatus.setText(tracked?"":t("cameraNoFace","No face detected"));
         if(calibrationPositioning){
             calibrationTracked=tracked?calibrationTracked+delta:0;
-            if(calibrationTracked>=1000){calibrationPositioning=false;calibrationPreview.setVisibility(View.GONE);calibrationPreview=null;calibrationTarget.setVisibility(View.VISIBLE);nextCalibration();}
+            if(calibrationTracked>=1000){calibrationPositioning=false;calibrationPreview.setVisibility(View.GONE);calibrationPreview=null;calibrationTarget.setVisibility(View.VISIBLE);layoutCalibration();nextCalibration();}
             return;
         }
         if(tracked)calibrationTracked+=delta;else calibrationMissing+=delta;
@@ -464,7 +525,7 @@ public final class MainActivity extends Activity {
             double[] values=new double[calibrationPoints.size()];for(int i=0;i<values.length;i++)values[i]=calibrationPoints.get(i)[axis];
             Arrays.sort(values);median[axis]=values[values.length/2];spread[axis]=values[values.length*3/4]-values[values.length/4];
         }
-        Log.i(TAG,String.format(java.util.Locale.ROOT,"Calibration target %d at (%.2f,%.2f): %d samples, median %s, IQR %s",calibrationIndex+1,calibrationTargets[calibrationIndex][0],calibrationTargets[calibrationIndex][1],calibrationPoints.size(),Arrays.toString(median),Arrays.toString(spread)));
+        Log.i(TAG,String.format(java.util.Locale.ROOT,"Calibration target %d at (%.3f,%.3f): %d samples, median %s, IQR %s",calibrationIndex+1,calibrationPositions[calibrationIndex][0],calibrationPositions[calibrationIndex][1],calibrationPoints.size(),Arrays.toString(median),Arrays.toString(spread)));
         calibrationSamples.add(median);calibrationIndex++;nextCalibration();
     }
     /** A calibration dot with a ring that fills while the eyes are measured on it. */
@@ -483,15 +544,29 @@ public final class MainActivity extends Activity {
             bounds.set(inset,inset,getWidth()-inset,getHeight()-inset);canvas.drawArc(bounds,-90,360*progress,false,ring);
         }
     }
+    /**
+     * Places the nine targets inside the system bars and moves the instructions and Cancel between the
+     * target rows, so no target hides behind the taskbar or under text.
+     */
+    private void layoutCalibration(){
+        float width=surface.getWidth(),height=surface.getHeight();
+        float left=calibrationOverlay.getPaddingLeft(),top=calibrationOverlay.getPaddingTop(),safeWidth=width-left-calibrationOverlay.getPaddingRight(),safeHeight=height-top-calibrationOverlay.getPaddingBottom();
+        calibrationPositions=new double[calibrationTargets.length][];
+        for(int i=0;i<calibrationTargets.length;i++)calibrationPositions[i]=new double[]{(left+calibrationTargets[i][0]*safeWidth)/width,(top+calibrationTargets[i][1]*safeHeight)/height};
+        FrameLayout.LayoutParams text=new FrameLayout.LayoutParams(-1,-2,android.view.Gravity.CENTER);calibrationText.setLayoutParams(text);calibrationText.setTranslationY(-.19f*safeHeight);
+        FrameLayout.LayoutParams cancel=new FrameLayout.LayoutParams(-2,dp(64),android.view.Gravity.CENTER);calibrationCancel.setLayoutParams(cancel);calibrationCancel.setTranslationY(.19f*safeHeight);
+        FrameLayout.LayoutParams status=new FrameLayout.LayoutParams(-1,-2,android.view.Gravity.CENTER);calibrationStatus.setLayoutParams(status);calibrationStatus.setTranslationY(-.19f*safeHeight+dp(48));
+    }
     private void nextCalibration(){
         if(calibrationIndex==calibrationTargets.length){
             try{
-                Calibration fitted=Calibration.fit(calibrationSamples.toArray(new double[0][]),calibrationTargets);
-                Log.i(TAG,String.format(java.util.Locale.ROOT,"Calibration fit: RMS error %.3f of the screen (ceiling %.2f)",fitted.error(),CALIBRATION_CEILING));
+                double[][] samples=calibrationSamples.toArray(new double[0][]);
+                Calibration fitted=samples[0].length==7?Calibration.fit(samples,calibrationPositions,GAZE_X,GAZE_Y):Calibration.fit(samples,calibrationPositions);
+                double[] axes=fitted.axisErrors(samples,calibrationPositions);
+                Log.i(TAG,String.format(java.util.Locale.ROOT,"Calibration fit: RMS error %.3f of the screen (x %.3f, y %.3f; ceiling %.2f)",fitted.error(),axes[0],axes[1],CALIBRATION_CEILING));
                 if(!(fitted.error()<=CALIBRATION_CEILING))throw new IllegalArgumentException("Calibration error too large");
                 calibration=fitted;calibrationWidth=surface.getWidth();calibrationHeight=surface.getHeight();calibrationRotation=displayRotation();gazeState[3]=0;
-                StringBuilder stored=new StringBuilder();for(double value:calibration.values())stored.append(value).append(',');stored.append(calibrationWidth).append(',').append(calibrationHeight).append(',').append(calibrationRotation);
-                preferences.edit().putString("calibration",stored.toString()).apply();
+                preferences.edit().putString("calibration",calibration.encode()+"|"+calibrationWidth+","+calibrationHeight+","+calibrationRotation).apply();
                 mode=3;save();modeButton.setText(modeName());updateProgressVisibility();gazeHinted=false;
                 notice(t("calibrationQuality","Calibration saved. Typical error: {error}% of the screen.").replace("{error}",String.valueOf(Math.round(fitted.error()*100))));
             }
@@ -502,8 +577,8 @@ public final class MainActivity extends Activity {
             cancelCalibration();return;
         }
         calibrationText.setText(t("lookTarget","Look at the target and hold still")+" · "+(calibrationIndex+1)+"/"+calibrationTargets.length);
-        calibrationTarget.setTranslationX((float)(surface.getWidth()*calibrationTargets[calibrationIndex][0])-dp(36));
-        calibrationTarget.setTranslationY((float)(surface.getHeight()*calibrationTargets[calibrationIndex][1])-dp(36));
+        calibrationTarget.setTranslationX((float)(surface.getWidth()*calibrationPositions[calibrationIndex][0])-dp(36));
+        calibrationTarget.setTranslationY((float)(surface.getHeight()*calibrationPositions[calibrationIndex][1])-dp(36));
         calibrationTarget.setProgress(0);calibrationPoints.clear();calibrationTracked=0;calibrationMissing=0;
     }
     private String modeName() { return new String[]{t("manual","Touch / keyboard"),t("dwell","Pointer dwell"),t("scan","Single switch"),t("gaze","Eye tracking")}[mode]; }
@@ -615,7 +690,7 @@ public final class MainActivity extends Activity {
         int progress=dwellState[0]<0?0:(int)Math.min(100,Math.max(0,(now-dwellState[1])*100/dwellMillis));
         if(selectionProgress!=null)selectionProgress.setProgress(progress);
         if(pointer!=null)pointer.show(gaze,mode==3?progress/100f:0);
-        handler.postDelayed(this,mode==0&&calibrationIndex<0?250:50);
+        handler.postDelayed(this,mode==0&&calibrationIndex<0&&cameraTracker==null?250:50);
     }};
     private int displayRotation(){return getWindowManager().getDefaultDisplay().getRotation();}
     /** Where the user is looking, in surface pixels, or null when uncalibrated or not tracking. */
@@ -623,7 +698,7 @@ public final class MainActivity extends Activity {
         if(gazeState[3]==0||now-lastGazeTime>500||calibrationIndex>=0)return null;
         if(calibration==null&&!gazeHinted){notice(t("gazeHint","The pointer follows your head. Calibrate in Settings so it follows your eyes too."));gazeHinted=true;}
         // Calibration maps this viewport from this camera position; keep it for when they return.
-        if(calibration!=null&&surface.getWidth()!=calibrationWidth||surface.getHeight()!=calibrationHeight||displayRotation()!=calibrationRotation){resetDwell();if(!sizeWarned)notice(t("recalibrate","The screen size changed. Calibrate again."));sizeWarned=true;return null;}
+        if(calibration!=null&&(surface.getWidth()!=calibrationWidth||surface.getHeight()!=calibrationHeight||displayRotation()!=calibrationRotation)){resetDwell();if(!sizeWarned)notice(t("recalibrate","The screen size changed. Calibrate again."));sizeWarned=true;return null;}
         sizeWarned=false;
         // gazeState already holds the calibrated, smoothed screen fraction.
         return new float[]{(float)(gazeState[0]*surface.getWidth()),(float)(gazeState[1]*surface.getHeight())};
@@ -696,7 +771,7 @@ public final class MainActivity extends Activity {
     @Override protected void onResume(){
         super.onResume();
         if(pack==null)return;
-        running=true;handler.post(tick);
+        running=true;handler.post(tick);registerDebugGaze();
         ((DisplayManager)getSystemService(DISPLAY_SERVICE)).registerDisplayListener(displayListener,handler);
         if(cameraWanted&&cameraTracker==null&&!requestingCamera&&checkSelfPermission(Manifest.permission.CAMERA)==PackageManager.PERMISSION_GRANTED)startCamera();
     }
@@ -707,5 +782,25 @@ public final class MainActivity extends Activity {
         if(pack!=null){if(!requestingCamera&&!isChangingConfigurations())setPaused(true);stopCamera(false);}
         stopSpeech();super.onPause();
     }
-    @Override protected void onDestroy(){if(tts!=null){stopSpeech();tts.shutdown();}super.onDestroy();}
+    /**
+     * Debug builds only: lets a developer drive the pointer, dwell and blink over adb without a face, e.g.
+     * adb shell am broadcast -a org.zektopic.zekals.DEBUG_GAZE --ef x 0.3 --ef y 0.6 [--el hold 2000] [--el blink 700]
+     */
+    private android.content.BroadcastReceiver debugGaze;
+    @android.annotation.SuppressLint("InlinedApi") // RECEIVER_EXPORTED is a constant older versions ignore.
+    private void registerDebugGaze(){
+        if(!BuildConfig.DEBUG||debugGaze!=null)return;
+        debugGaze=new android.content.BroadcastReceiver(){@Override public void onReceive(android.content.Context context,Intent intent){
+            long now=SystemClock.uptimeMillis();
+            if(intent.hasExtra("x")){lastGazeTime=now;NativeCore.smooth(gazeState,intent.getFloatExtra("x",.5f),intent.getFloatExtra("y",.5f),now,1,true);}
+            long hold=intent.getLongExtra("hold",0),end=now+hold;
+            if(hold>0)handler.post(new Runnable(){public void run(){long time=SystemClock.uptimeMillis();if(time>end)return;lastGazeTime=time;handler.postDelayed(this,100);}});
+            long held=intent.getLongExtra("blink",0);if(held>0){blink(true,now-held);blink(false,now);}
+            Log.i(TAG,"Debug gaze "+intent.getExtras());
+        }};
+        android.content.IntentFilter filter=new android.content.IntentFilter("org.zektopic.zekals.DEBUG_GAZE");
+        // Exported so adb can reach it; this receiver only exists in debug builds.
+        registerReceiver(debugGaze,filter,android.content.Context.RECEIVER_EXPORTED);
+    }
+    @Override protected void onDestroy(){if(debugGaze!=null)unregisterReceiver(debugGaze);if(tts!=null){stopSpeech();tts.shutdown();}super.onDestroy();}
 }

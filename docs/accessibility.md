@@ -8,8 +8,9 @@ preferences are also available. Buttons have at least 64 dp height, and buttons 
 a row share one height so wrapped labels do not misalign them.
 
 The app runs in landscape only (either way up). On wide screens (900 dp and up)
-the message, speech controls and phrases sit beside the keyboard so the whole board
-fits without scrolling. Narrower screens stack them and pin a two-line copy of the
+the message sits beside Speak/Stop/Undo/Clear, the phrases share one row, and the
+keyboard spans the full width in real keyboard rows that stretch to fill the rest of
+the height, so keys are as large as the screen allows and nothing needs scrolling. Narrower screens stack them and pin a two-line copy of the
 message above the scroll area whenever the message box is scrolled out of view.
 
 Single-switch scanning is row/column: rows are highlighted in turn, Space or Enter
@@ -36,8 +37,13 @@ it could be mistaken for an answer. Install voices opens the engine's voice data
 screen. No fallback speaks a different language. Speech plays on the media stream,
 so the status line warns when media volume is muted.
 
-In Eye tracking a pointer follows the calibrated gaze and fills a ring as dwell
-progresses; it glides between camera samples rather than jumping. Settings is a
+A round pointer appears whenever the camera tracks a face: before calibration it
+follows head turns, afterwards the calibrated gaze. In Eye tracking mode it fills a
+ring as dwell progresses; it glides between camera samples rather than jumping.
+Blink to select (Settings, on by default) presses whatever the pointer is on, or the
+highlighted row or button while scanning, when both eyes close for between the set
+blink length (600 ms by default) and 2.5 s; natural blinks are shorter and resting
+the eyes is longer, so neither presses anything. Settings is a
 separate page with a Back to board button, so scanning and gaze only reach the
 page that is showing. Without a calibration there is nothing to draw, and the app says so.
 The camera keeps the screen on while it runs, restarts when the app returns to the

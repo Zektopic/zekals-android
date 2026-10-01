@@ -27,10 +27,10 @@
       "H",
       "J",
       "K",
-      "L",
-      "Z"
+      "L"
     ],
     [
+      "Z",
       "X",
       "C",
       "V",
@@ -145,7 +145,10 @@
     "settingsBack": "Back to board",
     "facePosition": "Center your face in the frame. Calibration starts when your face is found.",
     "calibrationQuality": "Calibration saved. Typical error: {error}% of the screen.",
-    "cameraPreview": "Camera view"
+    "cameraPreview": "Camera view",
+    "blinkSelectOn": "Blink to select: on",
+    "blinkSelectOff": "Blink to select: off",
+    "blinkTime": "Blink length"
   },
   "speech": {
     "locale": "en-US",
