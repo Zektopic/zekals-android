@@ -2,7 +2,13 @@ package org.zektopic.zekals;
 
 import android.app.Activity;
 import android.Manifest;
+import android.content.ActivityNotFoundException;
+import android.content.Intent;
 import android.content.pm.PackageManager;
+import android.media.AudioManager;
+import android.net.Uri;
+import android.provider.Settings;
+import android.util.Log;
 import android.widget.FrameLayout;
 import android.widget.ProgressBar;
 import android.os.Bundle;
@@ -10,7 +16,11 @@ import android.os.Handler;
 import android.os.Looper;
 import android.os.SystemClock;
 import android.content.SharedPreferences;
+import android.graphics.Canvas;
 import android.graphics.Color;
+import android.graphics.Paint;
+import android.graphics.RectF;
+import android.hardware.display.DisplayManager;
 import android.graphics.Rect;
 import android.graphics.drawable.GradientDrawable;
 import android.icu.text.BreakIterator;
@@ -18,10 +28,12 @@ import android.speech.tts.TextToSpeech;
 import android.speech.tts.Voice;
 import android.text.Editable;
 import android.text.InputFilter;
+import android.text.TextUtils;
 import android.text.TextWatcher;
 import android.view.KeyEvent;
 import android.view.MotionEvent;
 import android.view.View;
+import android.view.WindowManager;
 import android.view.accessibility.AccessibilityEvent;
 import android.widget.Button;
 import android.widget.EditText;
@@ -30,31 +42,40 @@ import android.widget.ScrollView;
 import android.widget.TextView;
 import java.util.ArrayDeque;
 import java.util.ArrayList;
+import java.util.Arrays;
 import java.util.Comparator;
 import java.util.List;
+import java.util.function.Supplier;
 
 /** Native views work with TalkBack, Android Switch Access, touch and keyboard. */
+// UI text comes from the language packs in assets, not Android string resources.
+@android.annotation.SuppressLint("SetTextI18n")
 public final class MainActivity extends Activity {
-    private static final int BG = Color.rgb(12,23,36), SURFACE = Color.rgb(20,35,53), INK = Color.rgb(245,248,252), ACCENT = Color.rgb(188,235,207);
+    private static final String TAG = "zekALS";
+    private static final int BG = Color.rgb(12,23,36), SURFACE = Color.rgb(20,35,53), INK = Color.rgb(245,248,252), ACCENT = Color.rgb(188,235,207), SCAN = Color.rgb(255,221,133);
     private final Handler handler = new Handler(Looper.getMainLooper());
     private final List<Button> buttons = new ArrayList<>();
+    /** Each on-screen row of buttons is one group for row/column scanning. */
+    private final List<List<Button>> groups = new ArrayList<>();
     private final List<LanguagePack> packs = new ArrayList<>();
     private final ArrayDeque<String> undo = new ArrayDeque<>();
     private final long[] dwellState = {-1,0,0};
     private SharedPreferences preferences;
     private LanguagePack pack;
     private EditText message;
-    private TextView status, cameraStatus;
+    private TextView status, cameraStatus, messagePreview, voiceValue;
+    private String cameraText;
     private Rect gazeReentryBlocked;
     private String currentUtterance = "";
     private long utteranceSequence;
     private LinearLayout content, settingsPanel;
     private ScrollView scroll;
     private Button pauseButton, modeButton, selected;
+    private List<Button> scanGroup, scanItems;
     private TextToSpeech tts;
-    private boolean speechReady, paused, large, contrast, changing, running;
+    private boolean speechReady, paused, large, contrast, changing, running, cameraWanted, requestingCamera, sizeWarned, gazeHinted;
     private String lastMessage = "";
-    private int languageIndex, keyboardPage, mode, pointerTarget = -1, blockedTarget = -1, scanIndex = -1;
+    private int languageIndex, keyboardPage, mode, pointerTarget = -1, blockedTarget = -1, scanIndex = -1, scanEntry, renders;
     private long dwellMillis = 1200, scanMillis = 1400, lastScan;
     private float speechRate = .9f;
     private final List<Voice> voices = new ArrayList<>();
@@ -69,11 +90,17 @@ public final class MainActivity extends Activity {
         final double[] point; final long captured, generation; final String provider;
         CameraSample(double[] p,long c,String name,long g){point=p;captured=c;provider=name;generation=g;}
     }
+    /** Survives rotation in-process only; messages are never written to storage. */
+    private static final class Retained {
+        final String message; final boolean paused;
+        Retained(String m,boolean p){message=m;paused=p;}
+    }
     private volatile CameraSample pendingCameraSample;
     private final Runnable deliverGaze = this::deliverGazeSample;
     private final double[] gazeState = new double[4];
     private Calibration calibration;
-    private int calibrationWidth, calibrationHeight;
+    private int calibrationWidth, calibrationHeight, calibrationRotation, cameraRotation;
+    private GazePointer pointer;
     private int calibrationIndex = -1;
     private long calibrationStarted;
     private final List<double[]> calibrationPoints = new ArrayList<>();
@@ -86,7 +113,12 @@ public final class MainActivity extends Activity {
         large = preferences.getBoolean("large", false); contrast = preferences.getBoolean("contrast", false);
         dwellMillis = preferences.getLong("dwell", 1200); scanMillis = preferences.getLong("scan", 1400);
         speechRate = preferences.getFloat("rate", .9f);
-        Object previous = getLastNonConfigurationInstance(); if (previous instanceof String) lastMessage = (String) previous;
+        mode = preferences.getInt("mode", 0); if (mode < 0 || mode > 3 || (mode == 3 && !BuildConfig.CAMERA_AVAILABLE)) mode = 0;
+        requestedProvider = preferences.getString("provider", "CPU"); if (!Arrays.asList("CPU","GPU","NNAPI").contains(requestedProvider)) requestedProvider = "CPU";
+        cameraWanted = BuildConfig.CAMERA_AVAILABLE && preferences.getBoolean("camera", false);
+        restoreCalibration();
+        Object previous = getLastNonConfigurationInstance();
+        if (previous instanceof Retained) { lastMessage = ((Retained) previous).message; paused = ((Retained) previous).paused; }
         try {
             String[] files = getAssets().list("languages");
             if (files == null) throw new IllegalStateException("Missing languages");
@@ -95,8 +127,11 @@ public final class MainActivity extends Activity {
             String code = preferences.getString("language", "en");
             for (int i = 0; i < packs.size(); i++) if (packs.get(i).code.equals(code)) languageIndex = i;
             pack = packs.get(languageIndex); render();
+            // Entering touch mode clears focus from buttons; the root must hold it to see switch keys.
+            getWindow().getDecorView().getViewTreeObserver().addOnTouchModeChangeListener(inTouchMode -> { if (surface != null && !surface.hasFocus()) surface.requestFocus(); });
         } catch (Exception error) {
-            pack = null; TextView failure = new TextView(this); failure.setText("Language assets could not be loaded. Please reinstall the app."); setContentView(failure); return;
+            Log.e(TAG, "Language assets could not be loaded", error);
+            pack = null; TextView failure = new TextView(this); failure.setText(R.string.languages_failed); setContentView(failure); return;
         }
         tts = new TextToSpeech(this, result -> runOnUiThread(() -> {
             speechReady = result == TextToSpeech.SUCCESS; refreshVoices();
@@ -108,14 +143,16 @@ public final class MainActivity extends Activity {
             @Override public void onError(String id){runOnUiThread(()->{if(id.equals(currentUtterance))notice(t("speechFailed","Speech failed. Check the installed voice."));});}
         });
     }
-    @Override public Object onRetainNonConfigurationInstance() { return lastMessage; }
+    @Override public Object onRetainNonConfigurationInstance() { return new Retained(lastMessage, paused); }
     private String t(String key, String fallback) { return pack == null ? fallback : pack.text(key, fallback); }
     private int dp(int value) { return Math.round(value * getResources().getDisplayMetrics().density); }
     private void save() {
         preferences.edit().putString("language", pack.code).putBoolean("large", large).putBoolean("contrast", contrast)
-            .putLong("dwell", dwellMillis).putLong("scan", scanMillis).putFloat("rate", speechRate).apply();
+            .putLong("dwell", dwellMillis).putLong("scan", scanMillis).putFloat("rate", speechRate).putInt("mode", mode)
+            .putString("provider", requestedProvider).putBoolean("camera", cameraWanted).apply();
     }
     private void notice(String text) { if (status != null && !status.getText().toString().equals(text)) status.setText(text); }
+    private void cameraText(String text) { cameraText = text; if (cameraStatus != null && !cameraStatus.getText().toString().equals(text)) cameraStatus.setText(text); }
     private TextView label(String text, int size) {
         TextView view = new TextView(this); view.setText(text); view.setTextColor(INK); view.setTextSize(size + (large ? 4 : 0));
         view.setTextLocale(pack.locale); view.setPadding(dp(8),dp(12),dp(8),dp(8)); return view;
@@ -135,117 +172,187 @@ public final class MainActivity extends Activity {
         buttons.add(view); return view;
     }
     private void row(LinearLayout parent, Button... entries) {
-        LinearLayout row = new LinearLayout(this); row.setOrientation(LinearLayout.HORIZONTAL);
-        for (Button entry : entries) { LinearLayout.LayoutParams params = new LinearLayout.LayoutParams(0, -2, 1); params.setMargins(dp(4),dp(4),dp(4),dp(4)); row.addView(entry, params); }
-        parent.addView(row);
+        // Baseline alignment shifts buttons whose labels wrap onto two lines.
+        LinearLayout row = new LinearLayout(this); row.setOrientation(LinearLayout.HORIZONTAL); row.setBaselineAligned(false);
+        for (Button entry : entries) { LinearLayout.LayoutParams params = new LinearLayout.LayoutParams(0, -1, 1); params.setMargins(dp(4),dp(4),dp(4),dp(4)); row.addView(entry, params); }
+        parent.addView(row); groups.add(Arrays.asList(entries));
     }
     private void grid(LinearLayout parent, List<Button> entries, int columns) {
         for (int i=0; i<entries.size(); i+=columns) row(parent, entries.subList(i, Math.min(entries.size(), i+columns)).toArray(new Button[0]));
     }
+    /** A labelled value with − and + buttons; the value stays visible in Settings. */
+    private void stepper(LinearLayout panel, String name, Supplier<String> value, Runnable down, Runnable up) {
+        TextView shown = label(name + ": " + value.get(), 18); panel.addView(shown);
+        Runnable update = () -> { save(); shown.setText(name + ": " + value.get()); notice(shown.getText().toString()); };
+        row(panel, button(name + " −", () -> { down.run(); update.run(); }), button(name + " +", () -> { up.run(); update.run(); }));
+    }
     private void render() {
-        resetDwell(); buttons.clear(); selected = null; pointerTarget = -1; scanIndex = -1;
+        // Rebuilding the views must not throw the user back to the top or close Settings.
+        int keepScroll = scroll == null ? 0 : scroll.getScrollY();
+        boolean keepSettings = settingsPanel != null && settingsPanel.getVisibility() == View.VISIBLE;
+        renders++; resetDwell(); clearScan(); buttons.clear(); groups.clear(); selected = null; pointerTarget = -1; scanIndex = -1; scanGroup = null; scanItems = null;
         LinearLayout root = new LinearLayout(this); root.setOrientation(LinearLayout.VERTICAL); root.setPadding(dp(8),dp(6),dp(8),dp(4)); root.setBackgroundColor(contrast ? Color.BLACK : BG);root.setLayoutDirection(pack.rtl?View.LAYOUT_DIRECTION_RTL:View.LAYOUT_DIRECTION_LTR);
         root.setOnApplyWindowInsetsListener((v, insets) -> { v.setPadding(dp(8)+insets.getSystemWindowInsetLeft(), dp(6)+insets.getSystemWindowInsetTop(), dp(8)+insets.getSystemWindowInsetRight(), dp(4)+insets.getSystemWindowInsetBottom()); return insets; });
-        TextView title = label("zekALS · " + pack.name, 25); if(android.os.Build.VERSION.SDK_INT>=28)title.setAccessibilityHeading(true); root.addView(title);
-        cameraStatus=label(t("pointerReady","Camera unavailable"),16);if(BuildConfig.CAMERA_AVAILABLE)root.addView(cameraStatus);
+        android.content.res.Configuration config = getResources().getConfiguration();
+        // Wide landscape screens show the message and phrases beside the keyboard, so the whole
+        // board fits without scrolling (scrolling by gaze or switch is slow).
+        boolean wide = config.orientation == android.content.res.Configuration.ORIENTATION_LANDSCAPE && config.screenWidthDp >= 900;
+        int columnDp = wide ? config.screenWidthDp / 2 : config.screenWidthDp;
+        TextView title = label("zekALS · " + pack.name, 25); if(android.os.Build.VERSION.SDK_INT>=28)title.setAccessibilityHeading(true);
+        cameraStatus=label(cameraText == null ? t("cameraOff","Camera off") : cameraText,16);
+        LinearLayout header = new LinearLayout(this); header.setOrientation(wide ? LinearLayout.HORIZONTAL : LinearLayout.VERTICAL); header.setBaselineAligned(false);
+        // Short landscape phones need the height for content; the language name stays on its button.
+        if (config.screenHeightDp >= 480) header.addView(title);
+        if (BuildConfig.CAMERA_AVAILABLE) { cameraStatus.setGravity(wide ? android.view.Gravity.END | android.view.Gravity.CENTER_VERTICAL : android.view.Gravity.START); header.addView(cameraStatus, new LinearLayout.LayoutParams(wide ? 0 : -1, -1, 1)); }
+        root.addView(header);
         pauseButton = button(paused ? t("resume","Resume") : t("pause","Pause"), () -> setPaused(!paused));
         row(root, pauseButton, button(t("scrollUp","Scroll up"), () -> { scroll.smoothScrollBy(0,-scroll.getHeight()/2); resetDwell(); }), button(t("scrollDown","Scroll down"), () -> { scroll.smoothScrollBy(0,scroll.getHeight()/2); resetDwell(); }));
+        messagePreview = label(lastMessage, 18); messagePreview.setMaxLines(2); messagePreview.setEllipsize(TextUtils.TruncateAt.START);
+        messagePreview.setBackground(background(contrast ? Color.BLACK : SURFACE)); messagePreview.setVisibility(View.GONE);
+        messagePreview.setImportantForAccessibility(View.IMPORTANT_FOR_ACCESSIBILITY_NO); root.addView(messagePreview);
         scroll = new ScrollView(this); root.addView(scroll, new LinearLayout.LayoutParams(-1,0,1));
-        content = new LinearLayout(this); content.setOrientation(LinearLayout.VERTICAL); scroll.addView(content);
-        TextView heading = label(t("messageTitle","What would you like to say?"),24); if(android.os.Build.VERSION.SDK_INT>=28)heading.setAccessibilityHeading(true); content.addView(heading);
+        scroll.setOnScrollChangeListener((v, x, y, oldX, oldY) -> updatePreview());
+        content = new LinearLayout(this); content.setOrientation(wide ? LinearLayout.HORIZONTAL : LinearLayout.VERTICAL); content.setBaselineAligned(false); scroll.addView(content);
+        LinearLayout left = content, right = content;
+        if (wide) {
+            left = new LinearLayout(this); left.setOrientation(LinearLayout.VERTICAL); content.addView(left, new LinearLayout.LayoutParams(0, -2, 1));
+            right = new LinearLayout(this); right.setOrientation(LinearLayout.VERTICAL); content.addView(right, new LinearLayout.LayoutParams(0, -2, 1));
+        }
+        TextView heading = label(t("messageTitle","What would you like to say?"),24); if(android.os.Build.VERSION.SDK_INT>=28)heading.setAccessibilityHeading(true); left.addView(heading);
         message = new EditText(this); message.setId(View.generateViewId()); message.setText(lastMessage); message.setSelection(message.length());
         message.setSaveEnabled(false); message.setTextColor(INK); message.setHintTextColor(Color.LTGRAY); message.setTextSize(large ? 28 : 24);
-        message.setHint(t("textPlaceholder","Write a message")); message.setContentDescription(t("messageLabel","Your message")); message.setMinLines(3);
+        message.setHint(t("textPlaceholder","Write a message")); message.setContentDescription(t("messageLabel","Your message")); message.setMinLines(wide ? 2 : 3);
         message.setInputType(android.text.InputType.TYPE_CLASS_TEXT | android.text.InputType.TYPE_TEXT_FLAG_MULTI_LINE | android.text.InputType.TYPE_TEXT_FLAG_CAP_SENTENCES);
         message.setFilters(new InputFilter[]{new InputFilter.LengthFilter(2000)}); message.setBackground(background(contrast ? Color.BLACK : SURFACE));
-        message.setPadding(dp(14),dp(14),dp(14),dp(14)); message.setTextLocale(pack.locale); content.addView(message);
+        message.setPadding(dp(14),dp(14),dp(14),dp(14)); message.setTextLocale(pack.locale); left.addView(message);
         message.addTextChangedListener(new TextWatcher() {
             public void beforeTextChanged(CharSequence s,int start,int count,int after) {}
             public void onTextChanged(CharSequence s,int start,int before,int count) {}
             public void afterTextChanged(Editable text) {
                 if (!changing && !text.toString().equals(lastMessage)) { if (undo.size() >= 30) undo.removeFirst(); undo.addLast(lastMessage); }
-                lastMessage = text.toString();
+                lastMessage = text.toString(); messagePreview.setText(lastMessage); updatePreview();
             }
         });
         Button speak = button(t("speak","Speak"), this::speak); speak.setBackground(background(ACCENT)); speak.setTextColor(BG); speak.setTag(true);
-        row(content, speak, button(t("stop","Stop"), () -> { stopSpeech(); notice(t("stopped","Speech stopped.")); }));
-        row(content, button(t("undo","Undo"), () -> { if (!undo.isEmpty()) { changing=true; message.setText(undo.removeLast()); message.setSelection(message.length()); changing=false; } }), button(t("clear","Clear"), () -> message.setText("")));
+        row(left, speak, button(t("stop","Stop"), () -> { stopSpeech(); notice(t("stopped","Speech stopped.")); }));
+        row(left, button(t("undo","Undo"), () -> { if (!undo.isEmpty()) { changing=true; message.setText(undo.removeLast()); message.setSelection(message.length()); changing=false; } }), button(t("clear","Clear"), () -> message.setText("")));
+        boolean spaced = false;
         try {
-            content.addView(label(t("phrases","Everyday phrases"),22));
+            left.addView(label(t("phrases","Everyday phrases"),22));
             List<Button> phraseButtons = new ArrayList<>();
             for (String phrase : pack.phrases()) phraseButtons.add(button(phrase, () -> append((message.length()>0 ? " " : "") + phrase)));
-            grid(content, phraseButtons, getResources().getConfiguration().screenWidthDp >= 700 ? 4 : 2);
+            grid(left, phraseButtons, columnDp >= 600 ? 4 : 2);
             List<List<String>> pages = pack.pages(); keyboardPage %= pages.size();
-            row(content, button(t("moreKeys","More characters") + " " + (keyboardPage+1) + "/" + pages.size(), () -> { keyboardPage++; render(); }),
-                button(pack.name + " ›", () -> { stopSpeech(); languageIndex=(languageIndex+1)%packs.size(); pack=packs.get(languageIndex); keyboardPage=0; save(); refreshVoices(); render(); }));
+            Button more = button(t("moreKeys","More characters") + " " + (keyboardPage+1) + "/" + pages.size(), () -> { keyboardPage++; render(); });
+            Button language = button(pack.name + " ›", () -> { stopSpeech(); languageIndex=(languageIndex+1)%packs.size(); pack=packs.get(languageIndex); keyboardPage=0; save(); refreshVoices(); render(); });
+            if (!wide) row(left, more, language);
             List<Button> keys = new ArrayList<>();
-            for (String key : pages.get(keyboardPage)) keys.add(button(key.equals("\u200d") ? t("joinLetters","Join letters") : key.matches("\\p{M}+") ? "◌"+key : key, () -> append(key)));
-            grid(content, keys, getResources().getConfiguration().screenWidthDp >= 700 ? 10 : 5);
-        } catch (Exception error) { notice("Keyboard pack is invalid."); }
-        row(content, button(t("space","Space"), () -> append(" ")), button(t("backspace","Delete"), this::backspace));
-        settingsPanel = new LinearLayout(this); settingsPanel.setOrientation(LinearLayout.VERTICAL); settingsPanel.setVisibility(View.GONE);
-        content.addView(button(t("settings","Settings"), () -> { settingsPanel.setVisibility(settingsPanel.getVisibility()==View.VISIBLE ? View.GONE : View.VISIBLE); resetDwell(); }));
-        content.addView(settingsPanel);
-        modeButton = button(modeName(), () -> { mode=(mode+1)%(BuildConfig.CAMERA_AVAILABLE?4:3); lastScan=0; resetDwell(); modeButton.setText(modeName()); }); row(settingsPanel,modeButton);
-        row(settingsPanel,button(t("dwellTime","Dwell time") + " −", () -> { dwellMillis=Math.max(500,dwellMillis-100); save(); notice(dwellMillis + " ms"); }),button(t("dwellTime","Dwell time") + " +", () -> { dwellMillis=Math.min(3000,dwellMillis+100); save(); notice(dwellMillis + " ms"); }));
-        row(settingsPanel,button(t("scanTime","Scan interval") + " −", () -> { scanMillis=Math.max(600,scanMillis-200); save(); notice(scanMillis + " ms"); }),button(t("scanTime","Scan interval") + " +", () -> { scanMillis=Math.min(4000,scanMillis+200); save(); notice(scanMillis + " ms"); }));
+            for (String key : pages.get(keyboardPage)) keys.add(button(key.equals("‍") ? t("joinLetters","Join letters") : key.matches("\\p{M}+") ? "◌"+key : key, () -> append(key)));
+            grid(right, keys, columnDp >= 600 ? 10 : 5);
+            if (wide) { row(right, button(t("space","Space"), () -> append(" ")), button(t("backspace","Delete"), this::backspace)); row(right, more, language); spaced = true; }
+        } catch (Exception error) { Log.w(TAG, "Keyboard pack is invalid: " + pack.code, error); notice(t("keyboardInvalid","This keyboard could not be loaded.")); }
+        if (!spaced) row(right, button(t("space","Space"), () -> append(" ")), button(t("backspace","Delete"), this::backspace));
+        settingsPanel = new LinearLayout(this); settingsPanel.setOrientation(LinearLayout.VERTICAL); settingsPanel.setVisibility(keepSettings ? View.VISIBLE : View.GONE);
+        LinearLayout tools = wide ? right : left;
+        row(tools, button(t("settings","Settings"), () -> { settingsPanel.setVisibility(settingsPanel.getVisibility()==View.VISIBLE ? View.GONE : View.VISIBLE); resetDwell(); }));
+        tools.addView(settingsPanel);
+        modeButton = button(modeName(), () -> { mode=(mode+1)%(BuildConfig.CAMERA_AVAILABLE?4:3); lastScan=0; clearScan(); scanGroup=null; scanItems=null; scanIndex=-1; resetDwell(); save(); modeButton.setText(modeName()); updateProgressVisibility(); }); row(settingsPanel,modeButton);
+        stepper(settingsPanel, t("dwellTime","Dwell time"), () -> dwellMillis + " ms", () -> dwellMillis=Math.max(500,dwellMillis-100), () -> dwellMillis=Math.min(3000,dwellMillis+100));
+        stepper(settingsPanel, t("scanTime","Scan interval"), () -> scanMillis + " ms", () -> scanMillis=Math.max(600,scanMillis-200), () -> scanMillis=Math.min(4000,scanMillis+200));
         row(settingsPanel,button(t("textSize","Text size"), () -> { large=!large; save(); render(); }), button(t("contrast","Contrast"), () -> { contrast=!contrast; save(); render(); }));
-        row(settingsPanel,button(t("speechSpeed","Speech speed") + " −", () -> { speechRate=Math.max(.5f,speechRate-.1f); save(); notice(String.format(pack.locale,"%.1f×",speechRate)); }),button(t("speechSpeed","Speech speed") + " +", () -> { speechRate=Math.min(1.5f,speechRate+.1f); save(); notice(String.format(pack.locale,"%.1f×",speechRate)); }));
-        row(settingsPanel,button(t("voice","Voice") + " ›", () -> { if(!voices.isEmpty()){voiceIndex=(voiceIndex+1)%voices.size(); preferences.edit().putString("voice",voices.get(voiceIndex).getName()).apply(); notice(voices.get(voiceIndex).getName());}else notice(t("installVoice","Install a voice.")); }));
+        stepper(settingsPanel, t("speechSpeed","Speech speed"), () -> String.format(pack.locale,"%.1f×",speechRate), () -> speechRate=Math.max(.5f,Math.round((speechRate-.1f)*10)/10f), () -> speechRate=Math.min(1.5f,Math.round((speechRate+.1f)*10)/10f));
+        voiceValue = label(t("voice","Voice") + ": " + (voices.isEmpty() ? "—" : voiceLabel(voiceIndex)), 18); settingsPanel.addView(voiceValue);
+        row(settingsPanel,button(t("voice","Voice") + " ›", this::nextVoice), button(t("voiceSettings","Install voices"), this::openVoiceSettings));
         addCameraControls(settingsPanel);
         settingsPanel.addView(label(t("scanHelp","Press Space to choose the highlighted button. Escape pauses."),18));
         status=label(t("ready","Ready when you are."),18); status.setAccessibilityLiveRegion(View.ACCESSIBILITY_LIVE_REGION_POLITE); root.addView(status);
         selectionProgress = new ProgressBar(this, null, android.R.attr.progressBarStyleHorizontal);
-        selectionProgress.setMax(100); selectionProgress.setContentDescription(t("dwellTime","Selection progress")); root.addView(selectionProgress);
-        surface = new FrameLayout(this); surface.addView(root); setContentView(surface);
+        selectionProgress.setMax(100); selectionProgress.setContentDescription(t("selectionProgress","Selection progress")); root.addView(selectionProgress); updateProgressVisibility();
+        surface = new SwitchSurface(); surface.addView(root); pointer = new GazePointer(); surface.addView(pointer, new FrameLayout.LayoutParams(dp(56), dp(56)));
+        setContentView(surface); surface.requestFocus();
         // Calibration maps the viewport, so a keyboard-page rebuild preserves it.
         calibrationIndex = -1;
+        if (keepScroll > 0) { ScrollView view = scroll; view.post(() -> view.scrollTo(0, keepScroll)); }
     }
+    /** Pins a copy of the message above the scroll area whenever the message box is out of view. */
+    private void updatePreview() {
+        if (messagePreview == null || message == null) return;
+        Rect visible = new Rect(); boolean shown = message.getLocalVisibleRect(visible) && visible.height() >= message.getHeight() / 2;
+        int wanted = !shown && message.length() > 0 ? View.VISIBLE : View.GONE;
+        if (messagePreview.getVisibility() != wanted) messagePreview.setVisibility(wanted);
+    }
+    private void updateProgressVisibility() { if (selectionProgress != null) selectionProgress.setVisibility(mode == 1 || mode == 3 ? View.VISIBLE : View.GONE); }
     private void addCameraControls(LinearLayout panel) {
         if(!BuildConfig.CAMERA_AVAILABLE)return;
         row(panel,button(t("cameraControl","Camera: start / stop"),()->{
-            if(cameraTracker!=null){stopCamera();notice(t("pointerReady","Camera stopped"));}
-            else if(checkSelfPermission(Manifest.permission.CAMERA)!=PackageManager.PERMISSION_GRANTED)requestPermissions(new String[]{Manifest.permission.CAMERA},42);
-            else startCamera();
+            if(cameraTracker!=null){cameraWanted=false;save();stopCamera(true);notice(t("cameraStopped","Camera stopped. Other input still works."));}
+            else if(checkSelfPermission(Manifest.permission.CAMERA)==PackageManager.PERMISSION_GRANTED){cameraWanted=true;save();startCamera();}
+            else if(preferences.getBoolean("cameraAsked",false)&&!shouldShowRequestPermissionRationale(Manifest.permission.CAMERA)){
+                // Android stops showing the prompt after repeated denials; only App info can grant it now.
+                notice(t("cameraSettings","Allow the camera in App info › Permissions."));
+                try{startActivity(new Intent(Settings.ACTION_APPLICATION_DETAILS_SETTINGS,Uri.fromParts("package",getPackageName(),null)));}catch(ActivityNotFoundException error){Log.w(TAG,"App info unavailable",error);}
+            }
+            else{preferences.edit().putBoolean("cameraAsked",true).apply();requestingCamera=true;requestPermissions(new String[]{Manifest.permission.CAMERA},42);}
         }));
         row(panel,button(t("inference","Inference")+": " + requestedProvider,()->{
             requestedProvider=requestedProvider.equals("CPU")?"GPU":requestedProvider.equals("GPU")?"NNAPI":"CPU";
-            stopCamera();render();notice("Inference request: "+requestedProvider+". Start the camera to apply.");
+            // Another model family can change coordinates, so the calibration is discarded.
+            boolean restart=cameraTracker!=null;save();stopCamera(true);render();
+            if(restart)startCamera();else notice(t("inferenceRequest","Inference: {provider}. Start the camera to apply.").replace("{provider}",requestedProvider));
         }),button(t("calibrate","Calibrate"),this::startCalibration));
     }
     @Override public void onRequestPermissionsResult(int request,String[] permissions,int[] grants){
         super.onRequestPermissionsResult(request,permissions,grants);
-        if(request==42&&grants.length>0&&grants[0]==PackageManager.PERMISSION_GRANTED)startCamera();
-        else if(request==42)notice("Camera permission denied. Other input remains available.");
+        if(request!=42)return;
+        requestingCamera=false;
+        if(grants.length>0&&grants[0]==PackageManager.PERMISSION_GRANTED){cameraWanted=true;save();startCamera();}
+        else notice(t("cameraDenied","Camera permission denied. Other input still works."));
     }
     private void deliverGazeSample() {
         CameraSample sample=pendingCameraSample;if(sample==null||sample.generation!=cameraGeneration||!running)return;
         long now=SystemClock.uptimeMillis();boolean valid=sample.point!=null&&now-sample.captured<=500;
         NativeCore.smooth(gazeState,valid?sample.point[0]:0,valid?sample.point[1]:0,sample.captured,70,valid);
         lastGazeTime=valid?sample.captured:0;
-        if(!valid){if(mode==3)resetDwell();if(cameraStatus!=null)cameraStatus.setText(t("pointerReady","Tracking unavailable"));return;}
+        if(!valid){if(mode==3)resetDwell();cameraText(t("cameraNoFace","No face detected")+" · "+sample.provider);return;}
         if(calibrationIndex>=0&&now-calibrationStarted>1500)calibrationPoints.add(new double[]{gazeState[0],gazeState[1]});
-        if(cameraStatus!=null&&!cameraStatus.getText().toString().equals(sample.provider))cameraStatus.setText(sample.provider);
+        cameraText(t("cameraTracking","Eye tracking on")+" · "+sample.provider);
     }
     private void startCamera(){
-        stopCamera();long generation=++cameraGeneration;
-        cameraTracker=new CameraTracker(this,requestedProvider,getWindowManager().getDefaultDisplay().getRotation(),new CameraTracker.Listener(){
+        stopCamera(false);long generation=++cameraGeneration;cameraRotation=displayRotation();
+        // A gaze-only user cannot wake the screen, so it stays on while the camera runs.
+        getWindow().addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON);
+        cameraText(t("cameraStarting","Starting camera…"));
+        cameraTracker=new CameraTracker(this,requestedProvider,cameraRotation,new CameraTracker.Listener(){
             public void sample(double[] point,long captured,String provider){
                 pendingCameraSample=new CameraSample(point,captured,provider,generation);
                 handler.removeCallbacks(deliverGaze);handler.post(deliverGaze);
             }
-            public void unavailable(String reason){runOnUiThread(()->{
-                if(generation!=cameraGeneration)return;lastGazeTime=0;gazeState[3]=0;resetDwell();notice(reason);
+            public void unavailable(String key,String fallback){runOnUiThread(()->{
+                if(generation!=cameraGeneration)return;
+                // The tracker already closed itself; forget it so the next press retries.
+                stopCamera(false);notice(t(key,fallback));
             });}
         });
     }
-    private void stopCamera(){
+    /** Lifecycle stops keep the calibration; a user stop or provider change discards it. */
+    private void stopCamera(boolean discardCalibration){
         cameraGeneration++;handler.removeCallbacks(deliverGaze);pendingCameraSample=null;if(cameraTracker!=null){cameraTracker.close();cameraTracker=null;}
-        lastGazeTime=0;gazeState[3]=0;calibration=null;cancelCalibration();resetDwell();
+        lastGazeTime=0;gazeState[3]=0;cancelCalibration();resetDwell();
+        if(discardCalibration){calibration=null;preferences.edit().remove("calibration").apply();}
+        getWindow().clearFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON);
+        cameraText(t("cameraOff","Camera off"));
+    }
+    private void restoreCalibration(){
+        String stored=preferences.getString("calibration",null);if(stored==null)return;
+        try{
+            String[] parts=stored.split(",");double[] values=new double[6];for(int i=0;i<6;i++)values[i]=Double.parseDouble(parts[i]);
+            calibration=Calibration.restore(values);calibrationWidth=Integer.parseInt(parts[6]);calibrationHeight=Integer.parseInt(parts[7]);calibrationRotation=Integer.parseInt(parts[8]);
+        }catch(RuntimeException error){Log.w(TAG,"Discarding stored calibration",error);calibration=null;preferences.edit().remove("calibration").apply();}
     }
     private void startCalibration(){
-        if(SystemClock.uptimeMillis()-lastGazeTime>500||gazeState[3]==0){notice(t("needCamera","Connect the camera first."));return;}
-        resetDwell();calibrationSamples.clear();calibrationIndex=0;nextCalibration();
+        if(cameraTracker==null){notice(t("needCamera","Start the camera before calibration."));return;}
+        if(SystemClock.uptimeMillis()-lastGazeTime>500||gazeState[3]==0){notice(t("noFace","No face detected. Face the camera, then calibrate."));return;}
+        resetDwell();clearScan();calibrationSamples.clear();calibrationIndex=0;nextCalibration();
     }
     private void cancelCalibration(){
         calibrationIndex=-1;calibrationPoints.clear();
@@ -253,17 +360,25 @@ public final class MainActivity extends Activity {
     }
     private void nextCalibration(){
         if(calibrationIndex==5){
-            try{calibration=Calibration.fit(calibrationSamples.toArray(new double[0][]),calibrationTargets);calibrationWidth=surface.getWidth();calibrationHeight=surface.getHeight();mode=3;modeButton.setText(modeName());notice(t("calibrated","Calibration complete."));}
-            catch(IllegalArgumentException error){calibration=null;notice(error.getMessage());}
+            try{
+                calibration=Calibration.fit(calibrationSamples.toArray(new double[0][]),calibrationTargets);calibrationWidth=surface.getWidth();calibrationHeight=surface.getHeight();calibrationRotation=displayRotation();
+                StringBuilder stored=new StringBuilder();for(double value:calibration.values())stored.append(value).append(',');stored.append(calibrationWidth).append(',').append(calibrationHeight).append(',').append(calibrationRotation);
+                preferences.edit().putString("calibration",stored.toString()).apply();
+                mode=3;save();modeButton.setText(modeName());updateProgressVisibility();notice(t("calibrated","Calibration complete."));
+            }
+            catch(IllegalArgumentException error){
+                Log.i(TAG,"Calibration rejected: "+error.getMessage());calibration=null;
+                notice(String.valueOf(error.getMessage()).contains("movement")?t("calibrationMovement","Not enough eye movement between targets. Please retry."):t("calibrationError","Calibration was not accurate enough. Please retry."));
+            }
             cancelCalibration();return;
         }
         if(calibrationOverlay!=null)surface.removeView(calibrationOverlay);
         calibrationOverlay=new FrameLayout(this);calibrationOverlay.setBackgroundColor(BG);surface.addView(calibrationOverlay,new FrameLayout.LayoutParams(-1,-1));
         TextView instructions=label(t("lookTarget","Look at the target and hold still")+" · "+(calibrationIndex+1)+"/5",22);
-        FrameLayout.LayoutParams heading=new FrameLayout.LayoutParams(-1,dp(100));calibrationOverlay.addView(instructions,heading);
+        FrameLayout.LayoutParams heading=new FrameLayout.LayoutParams(-1,dp(100));heading.topMargin=dp(40);calibrationOverlay.addView(instructions,heading);
         Button cancel=new Button(this);cancel.setText(t("cancelCalibration","Cancel calibration"));cancel.setMinHeight(dp(64));cancel.setOnClickListener(v->cancelCalibration());
         FrameLayout.LayoutParams cancelPosition=new FrameLayout.LayoutParams(-2,dp(64),android.view.Gravity.BOTTOM|android.view.Gravity.CENTER_HORIZONTAL);cancelPosition.bottomMargin=dp(30);calibrationOverlay.addView(cancel,cancelPosition);
-        View target=new View(this);GradientDrawable circle=new GradientDrawable();circle.setShape(GradientDrawable.OVAL);circle.setColor(Color.rgb(255,221,133));target.setBackground(circle);
+        View target=new View(this);GradientDrawable circle=new GradientDrawable();circle.setShape(GradientDrawable.OVAL);circle.setColor(SCAN);target.setBackground(circle);
         FrameLayout.LayoutParams position=new FrameLayout.LayoutParams(dp(48),dp(48));
         position.leftMargin=(int)(surface.getWidth()*calibrationTargets[calibrationIndex][0])-dp(24);
         position.topMargin=(int)(surface.getHeight()*calibrationTargets[calibrationIndex][1])-dp(24);
@@ -277,7 +392,13 @@ public final class MainActivity extends Activity {
     }
     private void backspace() {
         int start=Math.max(0,message.getSelectionStart()), end=Math.max(start,message.getSelectionEnd());
-        if(start==end && start>0){BreakIterator iterator=BreakIterator.getCharacterInstance(pack.locale);iterator.setText(message.getText().toString());start=iterator.preceding(start);}
+        if(start==end && start>0){
+            String text=message.getText().toString();int last=text.codePointBefore(start),type=Character.getType(last);
+            // Combining signs and joiners are typed as separate keys, so Delete removes them one at a time.
+            boolean sign=(type==Character.NON_SPACING_MARK||type==Character.COMBINING_SPACING_MARK||type==Character.ENCLOSING_MARK||last==0x200D||last==0x200C)&&!(last>=0xFE00&&last<=0xFE0F);
+            if(sign)start-=Character.charCount(last);
+            else{BreakIterator iterator=BreakIterator.getCharacterInstance(pack.locale);iterator.setText(text);start=iterator.preceding(start);}
+        }
         if(start>=0)message.getText().delete(start,end);
     }
     private void refreshVoices() {
@@ -285,18 +406,71 @@ public final class MainActivity extends Activity {
         if(tts.getVoices()!=null)for(Voice voice:tts.getVoices())if(!voice.isNetworkConnectionRequired() && (voice.getFeatures()==null || !voice.getFeatures().contains(TextToSpeech.Engine.KEY_FEATURE_NOT_INSTALLED)) && voice.getLocale().getLanguage().equals(pack.locale.getLanguage()))voices.add(voice);
         voices.sort(Comparator.comparingInt(Voice::getQuality).reversed().thenComparing(Voice::getName)); voiceIndex=0;
         String preferred=preferences.getString("voice",""); for(int i=0;i<voices.size();i++)if(voices.get(i).getName().equals(preferred))voiceIndex=i;
+        if(voiceValue!=null)voiceValue.setText(t("voice","Voice") + ": " + (voices.isEmpty() ? "—" : voiceLabel(voiceIndex)));
+    }
+    /** Engine voice IDs mean nothing to users; show the accent and position instead. */
+    private String voiceLabel(int index){return voices.get(index).getLocale().getDisplayName(pack.locale)+" · "+(index+1)+"/"+voices.size();}
+    private void nextVoice(){
+        refreshVoices();
+        if(voices.isEmpty()){notice(t("installVoice","Install a voice."));return;}
+        voiceIndex=(voiceIndex+1)%voices.size(); preferences.edit().putString("voice",voices.get(voiceIndex).getName()).apply();
+        voiceValue.setText(t("voice","Voice") + ": " + voiceLabel(voiceIndex)); notice(voiceValue.getText().toString());
+        // Preview with the language name: a phrase such as "Yes" could be mistaken for an answer.
+        stopSpeech(); if(tts.setVoice(voices.get(voiceIndex))==TextToSpeech.SUCCESS){tts.setSpeechRate(speechRate);tts.speak(pack.name,TextToSpeech.QUEUE_FLUSH,null,currentUtterance="zekals-"+(++utteranceSequence));}
+    }
+    private void openVoiceSettings(){
+        for(String action:new String[]{TextToSpeech.Engine.ACTION_INSTALL_TTS_DATA,"com.android.settings.TTS_SETTINGS"}){
+            try{startActivity(new Intent(action));return;}catch(ActivityNotFoundException error){Log.i(TAG,"No activity for "+action);}
+        }
+        notice(t("installVoice","Install an offline voice for this language in device settings."));
     }
     private void stopSpeech(){currentUtterance="";utteranceSequence++;if(tts!=null)tts.stop();}
     private void speak() {
         if(message.getText().toString().trim().isEmpty()){notice(t("emptyMessage","Write a message first."));return;}
         refreshVoices(); if(!speechReady || voices.isEmpty()){notice(t("installVoice","Install a local voice for this language."));return;}
         stopSpeech(); if(tts.setVoice(voices.get(voiceIndex))!=TextToSpeech.SUCCESS){notice(t("installVoice","Install a local voice for this language."));return;} tts.setSpeechRate(speechRate);
-        if(tts.speak(message.getText().toString(),TextToSpeech.QUEUE_FLUSH,null,currentUtterance="zekals-"+(++utteranceSequence)) == TextToSpeech.ERROR)notice(t("speechFailed","Speech failed."));
-        else notice(t("speaking","Speaking…"));
+        if(tts.speak(message.getText().toString(),TextToSpeech.QUEUE_FLUSH,null,currentUtterance="zekals-"+(++utteranceSequence)) == TextToSpeech.ERROR){notice(t("speechFailed","Speech failed."));return;}
+        // Speech plays on the media stream; a muted stream silences the user's voice.
+        AudioManager audio=(AudioManager)getSystemService(AUDIO_SERVICE);
+        notice(audio!=null&&audio.getStreamVolume(AudioManager.STREAM_MUSIC)==0?t("mediaMuted","Media volume is muted, so speech cannot be heard."):t("speaking","Speaking…"));
     }
-    private void highlight(Button view, boolean active) { if(view==null)return; boolean primary=Boolean.TRUE.equals(view.getTag()); view.setBackground(background(active?Color.rgb(255,221,133):primary?ACCENT:contrast?Color.BLACK:SURFACE));view.setTextColor(active||primary?BG:INK); }
+    private void highlight(Button view, boolean active) { if(view==null)return; boolean primary=Boolean.TRUE.equals(view.getTag()); view.setBackground(background(active?SCAN:primary?ACCENT:contrast?Color.BLACK:SURFACE));view.setTextColor(active||primary?BG:INK); }
     private void resetDwell(){dwellState[0]=-1;dwellState[1]=0;dwellState[2]=0; highlight(selected,false);}
-    private void setPaused(boolean value){paused=value;resetDwell();pauseButton.setText(paused?t("resume","Resume"):t("pause","Pause"));notice(paused?t("paused","Paused"):t("ready","Ready"));}
+    private void setPaused(boolean value){paused=value;resetDwell();clearScan();pauseButton.setText(paused?t("resume","Resume"):t("pause","Pause"));notice(paused?t("paused","Paused"):t("ready","Ready"));}
+    private List<Button> shown(List<Button> group){List<Button> result=new ArrayList<>();for(Button b:group)if(b.isShown()&&b.isEnabled())result.add(b);return result;}
+    private void clearScan(){if(scanGroup!=null)for(Button b:scanGroup)highlight(b,false);if(mode==2)highlight(selected,false);}
+    private void reveal(Button view){
+        View row=(View)view.getParent();row.requestRectangleOnScreen(new Rect(0,0,row.getWidth(),row.getHeight()),true);
+        view.requestFocus();view.sendAccessibilityEvent(AccessibilityEvent.TYPE_VIEW_FOCUSED);
+    }
+    /** Row/column scanning: rows are highlighted first, then the buttons inside the chosen row. */
+    private void scanStep(){
+        clearScan();
+        if(scanItems==null){
+            List<List<Button>> visible=new ArrayList<>();for(List<Button> group:groups)if(!shown(group).isEmpty())visible.add(group);
+            if(visible.isEmpty())return;
+            scanIndex=(scanIndex+1)%visible.size();scanGroup=visible.get(scanIndex);selected=null;
+            List<Button> items=shown(scanGroup);for(Button b:items)highlight(b,true);reveal(items.get(0));
+        }else{
+            List<Button> items=shown(scanItems);scanIndex++;
+            // One silent pass through a row returns to row scanning on the same row.
+            if(scanIndex>=items.size()){scanItems=null;scanIndex=scanEntry-1;scanStep();return;}
+            selected=items.get(scanIndex);highlight(selected,true);reveal(selected);
+        }
+    }
+    private void scanSelect(){
+        if(scanItems==null){
+            if(scanGroup==null)return;List<Button> items=shown(scanGroup);if(items.isEmpty())return;
+            if(items.size()==1){activate(items.get(0));return;}
+            clearScan();scanItems=scanGroup;scanEntry=scanIndex;scanIndex=-1;lastScan=0;
+        }else if(selected!=null&&selected.isShown())activate(selected);
+    }
+    private void activate(Button view){
+        int entry=scanItems==null?scanIndex:scanEntry,before=renders;clearScan();view.performClick();
+        if(renders!=before)return;
+        // Stay on the same row so repeated letters are quick.
+        scanItems=null;scanGroup=null;selected=null;scanIndex=entry-1;lastScan=0;
+    }
     private final Runnable tick = new Runnable(){ public void run(){
         if(!running)return;
         long now=SystemClock.uptimeMillis();
@@ -304,14 +478,10 @@ public final class MainActivity extends Activity {
             if(now-lastGazeTime>500||calibrationPoints.size()<5){cancelCalibration();notice(t("calibrationLost","Tracking lost. Please retry."));}
             else{double x=0,y=0;for(double[] sample:calibrationPoints){x+=sample[0];y+=sample[1];}calibrationSamples.add(new double[]{x/calibrationPoints.size(),y/calibrationPoints.size()});calibrationIndex++;nextCalibration();}
         }
-        if(mode==2 && !paused && calibrationIndex<0 && now-lastScan>=scanMillis){
-            List<Button> available=new ArrayList<>();for(Button b:buttons)if(b.isShown()&&b.isEnabled())available.add(b);
-            highlight(selected,false);
-            if(!available.isEmpty()){scanIndex=(scanIndex+1)%available.size();selected=available.get(scanIndex);highlight(selected,true);selected.requestFocus();selected.requestRectangleOnScreen(new Rect(0,0,selected.getWidth(),selected.getHeight()),true);selected.sendAccessibilityEvent(AccessibilityEvent.TYPE_VIEW_FOCUSED);}
-            lastScan=now;
-        }
+        if(mode==2 && !paused && calibrationIndex<0 && now-lastScan>=scanMillis){scanStep();lastScan=now;}
+        float[] gaze=mode==3?gazePoint(now):null;
         if((mode==1 || mode==3) && calibrationIndex<0){
-            int target=mode==1?pointerTarget:gazeTarget(now);
+            int target=mode==1?pointerTarget:gazeTarget(gaze);
             if(target!=blockedTarget)blockedTarget=-1;
             if(target==blockedTarget || (paused && target!=pauseButton.getId()))target=-1;
             Button next=null;for(Button b:buttons)if(b.getId()==target&&b.isShown()){next=b;break;}
@@ -320,26 +490,100 @@ public final class MainActivity extends Activity {
                 for(Button b:buttons)if(b.getId()==target&&b.isShown()){blockedTarget=target;b.performClick();break;}
             }
         }
-        if(selectionProgress!=null)selectionProgress.setProgress(dwellState[0]<0?0:(int)Math.min(100,Math.max(0,(now-dwellState[1])*100/dwellMillis)));
+        int progress=dwellState[0]<0?0:(int)Math.min(100,Math.max(0,(now-dwellState[1])*100/dwellMillis));
+        if(selectionProgress!=null)selectionProgress.setProgress(progress);
+        if(pointer!=null)pointer.show(gaze,progress/100f);
         handler.postDelayed(this,mode==0&&calibrationIndex<0?250:50);
     }};
-    private int gazeTarget(long now){
-        if(calibration==null||gazeState[3]==0||now-lastGazeTime>500||calibrationIndex>=0)return -1;
-        if(surface.getWidth()!=calibrationWidth||surface.getHeight()!=calibrationHeight){calibration=null;resetDwell();notice(t("gazeHint","Recalibrate after resizing."));return -1;}
-        double[] mapped=calibration.map(gazeState[0],gazeState[1]);int[] origin=new int[2];surface.getLocationOnScreen(origin);
-        int x=origin[0]+(int)(mapped[0]*surface.getWidth()),y=origin[1]+(int)(mapped[1]*surface.getHeight());
+    private int displayRotation(){return getWindowManager().getDefaultDisplay().getRotation();}
+    /** Where the user is looking, in surface pixels, or null when uncalibrated or not tracking. */
+    private float[] gazePoint(long now){
+        if(calibration==null&&gazeState[3]!=0&&!gazeHinted){notice(t("gazeHint","Calibrate in Settings before choosing buttons with your eyes."));gazeHinted=true;}
+        if(calibration==null||gazeState[3]==0||now-lastGazeTime>500||calibrationIndex>=0)return null;
+        // Calibration maps this viewport from this camera position; keep it for when they return.
+        if(surface.getWidth()!=calibrationWidth||surface.getHeight()!=calibrationHeight||displayRotation()!=calibrationRotation){resetDwell();if(!sizeWarned)notice(t("recalibrate","The screen size changed. Calibrate again."));sizeWarned=true;return null;}
+        sizeWarned=false;
+        double[] mapped=calibration.map(gazeState[0],gazeState[1]);
+        return new float[]{(float)(mapped[0]*surface.getWidth()),(float)(mapped[1]*surface.getHeight())};
+    }
+    private int gazeTarget(float[] gaze){
+        if(gaze==null)return -1;
+        int[] origin=new int[2];surface.getLocationOnScreen(origin);
+        int x=origin[0]+(int)gaze[0],y=origin[1]+(int)gaze[1];
         if(gazeReentryBlocked!=null){if(gazeReentryBlocked.contains(x,y))return -1;gazeReentryBlocked=null;}
         Rect bounds=new Rect();for(Button button:buttons)if(button.isShown()&&button.getGlobalVisibleRect(bounds)&&bounds.contains(x,y))return button.getId();
         return -1;
     }
-    @Override public boolean onKeyDown(int key,KeyEvent event){
-        if(key==KeyEvent.KEYCODE_ESCAPE){cancelCalibration();setPaused(true);stopSpeech();return true;}
-        if(mode==2 && (key==KeyEvent.KEYCODE_SPACE || key==KeyEvent.KEYCODE_ENTER)){
-            if(event.getRepeatCount()==0){if(paused)setPaused(false);else if(selected!=null&&selected.isShown()){selected.performClick();lastScan=SystemClock.uptimeMillis();}}return true;
+    /**
+     * Switch keys are handled before the view hierarchy: scanning gives buttons keyboard focus,
+     * and a focused button would otherwise consume Space/Enter as a click and swallow Escape.
+     */
+    @Override public boolean dispatchKeyEvent(KeyEvent event){ return switchKey(event) || super.dispatchKeyEvent(event); }
+    private boolean switchKey(KeyEvent event){
+        int key=event.getKeyCode();
+        boolean escape=key==KeyEvent.KEYCODE_ESCAPE;
+        boolean select=mode==2&&(key==KeyEvent.KEYCODE_SPACE||key==KeyEvent.KEYCODE_ENTER||key==KeyEvent.KEYCODE_NUMPAD_ENTER);
+        if(pack==null||!(escape||select))return false;
+        if(event.getAction()==KeyEvent.ACTION_DOWN&&event.getRepeatCount()==0){
+            if(escape){cancelCalibration();setPaused(true);stopSpeech();}
+            else if(paused)setPaused(false);
+            else scanSelect();
         }
-        return super.onKeyDown(key,event);
+        return true;
     }
-    @Override protected void onResume(){super.onResume();if(pack!=null){running=true;handler.post(tick);}}
-    @Override protected void onPause(){running=false;handler.removeCallbacks(tick);if(pack!=null){setPaused(true);stopCamera();}stopSpeech();super.onPause();}
+    /**
+     * In touch mode Android consumes the first Space/Enter just to leave touch mode, before the
+     * activity sees it. Pre-IME dispatch runs earlier, so the root stays focusable to receive it.
+     */
+    private final class SwitchSurface extends FrameLayout {
+        SwitchSurface(){
+            super(MainActivity.this);setFocusable(true);setFocusableInTouchMode(true);setDefaultFocusHighlightEnabled(false);
+            setImportantForAccessibility(View.IMPORTANT_FOR_ACCESSIBILITY_NO);
+        }
+        @Override public boolean dispatchKeyEventPreIme(KeyEvent event){ return switchKey(event) || super.dispatchKeyEventPreIme(event); }
+    }
+    /** The eye-tracking pointer: drawn where the user looks, with dwell progress as a ring. */
+    private final class GazePointer extends View {
+        private final Paint fill=new Paint(Paint.ANTI_ALIAS_FLAG), ring=new Paint(Paint.ANTI_ALIAS_FLAG), arc=new Paint(Paint.ANTI_ALIAS_FLAG);
+        private final RectF bounds=new RectF();
+        private float progress;
+        GazePointer(){
+            super(MainActivity.this);setVisibility(View.GONE);setImportantForAccessibility(View.IMPORTANT_FOR_ACCESSIBILITY_NO);
+            fill.setColor(Color.argb(90,255,221,133));
+            ring.setStyle(Paint.Style.STROKE);ring.setStrokeWidth(dp(3));ring.setColor(SCAN);
+            arc.setStyle(Paint.Style.STROKE);arc.setStrokeWidth(dp(5));arc.setStrokeCap(Paint.Cap.ROUND);arc.setColor(ACCENT);
+        }
+        void show(float[] gaze,float dwell){
+            int wanted=gaze==null?View.GONE:View.VISIBLE;if(getVisibility()!=wanted)setVisibility(wanted);
+            if(gaze==null)return;
+            setTranslationX(gaze[0]-getWidth()/2f);setTranslationY(gaze[1]-getHeight()/2f);
+            if(dwell!=progress){progress=dwell;invalidate();}
+        }
+        @Override protected void onDraw(Canvas canvas){
+            float inset=dp(5),radius=getWidth()/2f-inset,cx=getWidth()/2f,cy=getHeight()/2f;
+            canvas.drawCircle(cx,cy,radius,fill);canvas.drawCircle(cx,cy,radius,ring);canvas.drawCircle(cx,cy,dp(3),ring);
+            if(progress>0){bounds.set(inset,inset,getWidth()-inset,getHeight()-inset);canvas.drawArc(bounds,-90,360*progress,false,arc);}
+        }
+    }
+    /** Flipping a landscape device turns the camera image upside down without recreating the activity. */
+    private final DisplayManager.DisplayListener displayListener=new DisplayManager.DisplayListener(){
+        @Override public void onDisplayAdded(int id){}
+        @Override public void onDisplayRemoved(int id){}
+        @Override public void onDisplayChanged(int id){if(cameraTracker!=null&&displayRotation()!=cameraRotation)startCamera();}
+    };
+    @Override protected void onResume(){
+        super.onResume();
+        if(pack==null)return;
+        running=true;handler.post(tick);
+        ((DisplayManager)getSystemService(DISPLAY_SERVICE)).registerDisplayListener(displayListener,handler);
+        if(cameraWanted&&cameraTracker==null&&!requestingCamera&&checkSelfPermission(Manifest.permission.CAMERA)==PackageManager.PERMISSION_GRANTED)startCamera();
+    }
+    @Override protected void onPause(){
+        running=false;handler.removeCallbacks(tick);
+        if(pack!=null)((DisplayManager)getSystemService(DISPLAY_SERVICE)).unregisterDisplayListener(displayListener);
+        // Rotation and our own permission prompt are not the user leaving the app.
+        if(pack!=null){if(!requestingCamera&&!isChangingConfigurations())setPaused(true);stopCamera(false);}
+        stopSpeech();super.onPause();
+    }
     @Override protected void onDestroy(){if(tts!=null){stopSpeech();tts.shutdown();}super.onDestroy();}
 }

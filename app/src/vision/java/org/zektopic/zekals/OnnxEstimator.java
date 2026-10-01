@@ -26,6 +26,7 @@ final class OnnxEstimator implements GazeEstimator {
     private final float[] tensor;
     private String provider;
     OnnxEstimator(Context context,boolean nnapi) throws Exception {
+        environment.setTelemetry(false); // Offline app: no ONNX Runtime usage telemetry.
         String checksum;
         try(InputStream stream=context.getAssets().open("gaze.sha256")){
             byte[] bytes=new byte[66];int count=stream.read(bytes);checksum=new String(bytes,0,Math.max(count,0),StandardCharsets.US_ASCII).trim();

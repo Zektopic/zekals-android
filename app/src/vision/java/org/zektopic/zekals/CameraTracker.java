@@ -18,7 +18,9 @@ import java.util.Collections;
 
 /** One camera worker, acquireLatestImage, 10 Hz ceiling, no frame queue or network. */
 final class CameraTracker implements AutoCloseable {
-    interface Listener { void sample(double[] point,long captured,String provider); void unavailable(String message); }
+    /** Failures carry a language-pack key plus an English fallback. */
+    interface Listener { void sample(double[] point,long captured,String provider); void unavailable(String key,String fallback); }
+    private static final String TAG="zekALS";
     private final Context context;
     private final Listener listener;
     private final HandlerThread thread=new HandlerThread("zekals-camera");
@@ -35,17 +37,22 @@ final class CameraTracker implements AutoCloseable {
     private ByteBuffer rgba;
     private int rotation;
     private long lastFrame,lastTimestamp;
+    private String providerNote="";
     CameraTracker(Context context,String requested,int displayRotation,Listener listener){
         this.context=context.getApplicationContext();this.requested=requested;this.listener=listener;
         displayDegrees=displayRotation==Surface.ROTATION_90?90:displayRotation==Surface.ROTATION_180?180:displayRotation==Surface.ROTATION_270?270:0;
         thread.start();handler=new Handler(thread.getLooper());handler.post(this::start);
     }
-    private void fail(String message){if(active){listener.unavailable(message);close();}}
+    private void fail(String key,String fallback,Throwable error){
+        android.util.Log.w(TAG,"Camera tracking stopped: "+key,error);
+        if(active){listener.unavailable(key,fallback);close();}
+    }
     private void start(){
         try {
-            if(context.checkSelfPermission(Manifest.permission.CAMERA)!=PackageManager.PERMISSION_GRANTED){fail("Camera permission is required for eye tracking.");return;}
+            if(context.checkSelfPermission(Manifest.permission.CAMERA)!=PackageManager.PERMISSION_GRANTED){fail("cameraPermission","Camera permission is required for eye tracking.",null);return;}
             if(requested.equals("NNAPI")){
-                try{estimator=new OnnxEstimator(context,true);}catch(Exception | LinkageError unavailable){estimator=new MediaPipeEstimator(context,false);}
+                try{estimator=new OnnxEstimator(context,true);}
+                catch(Exception | LinkageError unavailable){android.util.Log.i(TAG,"Custom ONNX model unavailable; using MediaPipe CPU",unavailable);providerNote=" (no ONNX model)";estimator=new MediaPipeEstimator(context,false);}
             }else estimator=new MediaPipeEstimator(context,requested.equals("GPU"));
             if(!active)return;
             CameraManager manager=(CameraManager)context.getSystemService(Context.CAMERA_SERVICE);
@@ -55,7 +62,7 @@ final class CameraTracker implements AutoCloseable {
                 Integer facing=candidate.get(CameraCharacteristics.LENS_FACING);
                 if(facing!=null&&facing==CameraCharacteristics.LENS_FACING_FRONT){selected=id;characteristics=candidate;break;}
             }
-            if(selected==null){fail("No front-facing camera found.");return;}
+            if(selected==null){fail("noFrontCamera","No front-facing camera found.",null);return;}
             Integer orientation=characteristics.get(CameraCharacteristics.SENSOR_ORIENTATION);
             rotation=((orientation==null?0:orientation)+displayDegrees)%360;
             var map=characteristics.get(CameraCharacteristics.SCALER_STREAM_CONFIGURATION_MAP);
@@ -72,15 +79,15 @@ final class CameraTracker implements AutoCloseable {
                         @Override public void onConfigured(CameraCaptureSession value){
                             if(!active){value.close();return;}session=value;
                             try{CaptureRequest.Builder request=camera.createCaptureRequest(CameraDevice.TEMPLATE_PREVIEW);request.addTarget(reader.getSurface());request.set(CaptureRequest.CONTROL_MODE,CaptureRequest.CONTROL_MODE_AUTO);session.setRepeatingRequest(request.build(),null,handler);}
-                            catch(CameraAccessException error){fail("Camera stream could not start.");}
+                            catch(CameraAccessException error){fail("cameraFailed","The camera stopped working. Other input still works.",error);}
                         }
-                        @Override public void onConfigureFailed(CameraCaptureSession value){value.close();fail("Camera configuration failed.");}
-                    },handler);}catch(CameraAccessException error){fail("Camera access failed.");}
+                        @Override public void onConfigureFailed(CameraCaptureSession value){value.close();fail("cameraFailed","The camera stopped working. Other input still works.",null);}
+                    },handler);}catch(CameraAccessException error){fail("cameraFailed","The camera stopped working. Other input still works.",error);}
                 }
-                @Override public void onDisconnected(CameraDevice device){device.close();fail("Camera disconnected.");}
-                @Override public void onError(CameraDevice device,int error){device.close();fail("Camera is unavailable. Other input still works.");}
+                @Override public void onDisconnected(CameraDevice device){device.close();fail("cameraFailed","The camera stopped working. Other input still works.",null);}
+                @Override public void onError(CameraDevice device,int error){device.close();fail("cameraFailed","The camera stopped working. Other input still works.",new IllegalStateException("CameraDevice error "+error));}
             },handler);
-        }catch(Exception | LinkageError error){fail("Tracking unavailable. Check permission and installed model assets.");}
+        }catch(Exception | LinkageError error){fail("trackingUnavailable","Eye tracking could not start. Other input still works.",error);}
     }
     private void onImage(ImageReader source){
         if(!active)return;
@@ -100,8 +107,8 @@ final class CameraTracker implements AutoCloseable {
                 if(!(estimator instanceof MediaPipeEstimator))throw accelerationFailure;
                 estimator.close();estimator=new MediaPipeEstimator(context,false);point=estimator.predict(bitmap,++lastTimestamp);
             }
-            if(active)listener.sample(point,now,estimator.provider());
-        }catch(Exception | LinkageError error){fail("Tracking lost. Use touch, keyboard or switch access.");}
+            if(active)listener.sample(point,now,estimator.provider()+providerNote);
+        }catch(Exception | LinkageError error){fail("trackingLost","Eye tracking stopped. Use touch, keyboard or switch access.",error);}
     }
     @Override public synchronized void close(){
         if(closing)return;closing=true;active=false;

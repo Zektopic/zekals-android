@@ -29,6 +29,13 @@ public final class Calibration {
         if(!Double.isFinite(error)||Math.sqrt(error/raw.length)>.12)throw new IllegalArgumentException("Calibration error too large");
         return new Calibration(result);
     }
+    /** Six affine coefficients, row-major, for persisting a calibration between sessions. */
+    public double[] values() { return new double[]{coefficients[0][0],coefficients[0][1],coefficients[0][2],coefficients[1][0],coefficients[1][1],coefficients[1][2]}; }
+    public static Calibration restore(double[] values) {
+        if(values==null||values.length!=6)throw new IllegalArgumentException("Invalid calibration");
+        for(double value:values)if(!Double.isFinite(value))throw new IllegalArgumentException("Invalid calibration");
+        return new Calibration(new double[][]{{values[0],values[1],values[2]},{values[3],values[4],values[5]}});
+    }
     public double[] map(double x,double y) {
         if(!Double.isFinite(x)||!Double.isFinite(y))throw new IllegalArgumentException("Invalid gaze");
         double[] result=new double[2];for(int i=0;i<2;i++)result[i]=Math.max(0,Math.min(1,coefficients[i][0]*x+coefficients[i][1]*y+coefficients[i][2]));return result;

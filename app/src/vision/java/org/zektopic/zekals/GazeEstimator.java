@@ -47,7 +47,8 @@ final class MediaPipeEstimator implements GazeEstimator {
         if(!actual.toString().equals(expected))throw new IllegalArgumentException("Model checksum mismatch");
     }
     @Override public double[] predict(Bitmap bitmap,long timestamp) {
-        MPImage image=new BitmapImageBuilder(bitmap).build();
+        // MPImage.close() recycles its bitmap, and the caller reuses this one for every frame.
+        MPImage image=new BitmapImageBuilder(bitmap.copy(Bitmap.Config.ARGB_8888,false)).build();
         try {
             var result=landmarker.detectForVideo(image,timestamp);
             if(result.faceLandmarks().isEmpty())return null;

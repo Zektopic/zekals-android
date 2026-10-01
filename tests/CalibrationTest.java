@@ -5,6 +5,9 @@ public final class CalibrationTest {
         for(int i=0;i<5;i++)for(int axis=0;axis<2;axis++)raw[i][axis]=targets[i][axis]/2+.2;
         double[] result=Calibration.fit(raw,targets).map(.45,.45);
         if(Math.abs(result[0]-.5)>1e-8||Math.abs(result[1]-.5)>1e-8)throw new AssertionError("Affine calibration failed");
+        double[] restored=Calibration.restore(Calibration.fit(raw,targets).values()).map(.45,.45);
+        if(Math.abs(restored[0]-.5)>1e-8||Math.abs(restored[1]-.5)>1e-8)throw new AssertionError("Calibration round trip failed");
+        try{Calibration.restore(new double[]{1,0,0,0,1,Double.NaN});throw new AssertionError("Non-finite calibration restored");}catch(IllegalArgumentException expected){}
         for(int i=0;i<5;i++){raw[i][0]=.5;raw[i][1]=.5;}
         try{Calibration.fit(raw,targets);throw new AssertionError("Degenerate calibration accepted");}catch(IllegalArgumentException expected){}
         System.out.println("Calibration affine mapping and degeneracy checks passed");
