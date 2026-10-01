@@ -14,11 +14,13 @@ import java.util.Locale;
 public final class LanguagePack {
     public final String code, name;
     public final Locale locale;
+    public final boolean rtl;
     private final JSONObject data;
     public LanguagePack(AssetManager assets, String filename) throws Exception {
         try (InputStream input = assets.open("languages/" + filename)) {
             data = new JSONObject(new String(readBounded(input), StandardCharsets.UTF_8));
         }
+        rtl = data.getString("direction").equals("rtl");
         code = data.getString("code"); name = data.getString("name");
         if (data.getInt("schemaVersion") != 1 || !code.matches("[a-z]{2,3}(-[A-Za-z0-9]+)*") || !filename.equals(code + ".json")) throw new IllegalArgumentException("Invalid language pack");
         locale = Locale.forLanguageTag(data.getString("locale"));

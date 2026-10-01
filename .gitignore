@@ -5,4 +5,6 @@ local.properties
 *.jks
 *.keystore
 *.hprof
-app/src/main/assets/face_landmarker.task
+app/src/vision/assets/face_landmarker.task
+app/src/vision/assets/gaze.onnx
+app/src/vision/assets/gaze.sha256
