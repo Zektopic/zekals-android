@@ -39,7 +39,7 @@ final class MediaPipeEstimator implements GazeEstimator {
     private static FaceLandmarker create(Context context,Delegate delegate) {
         return FaceLandmarker.createFromOptions(context,FaceLandmarker.FaceLandmarkerOptions.builder()
             .setBaseOptions(BaseOptions.builder().setModelAssetPath("face_landmarker.task").setDelegate(delegate).build())
-            .setRunningMode(RunningMode.VIDEO).setNumFaces(1).setMinFaceDetectionConfidence(.5f)
+            .setRunningMode(RunningMode.VIDEO).setNumFaces(1).setMinFaceDetectionConfidence(.6f)
             .setMinFacePresenceConfidence(.5f).setMinTrackingConfidence(.5f).build());
     }
     static void verify(Context context,String asset,String expected) throws Exception {
@@ -74,7 +74,8 @@ final class MediaPipeEstimator implements GazeEstimator {
             double w=bitmap.getWidth(),h=bitmap.getHeight();NormalizedLandmark left=points.get(33),right=points.get(263),nose=points.get(1);
             double span=Math.hypot((right.x()-left.x())*w,(right.y()-left.y())*h);if(span<1e-3)return null;
             double headX=(nose.x()-(left.x()+right.x())/2)*w/span,headY=(nose.y()-(left.y()+right.y())/2)*h/span;
-            boolean ok=Double.isFinite(x)&&Double.isFinite(y)&&x>=0&&x<=1&&y>=0&&y<=1&&Double.isFinite(headX)&&Double.isFinite(headY);
+            // Irises near the eye corners, or a nose far outside the face, mean a false detection.
+            boolean ok=Double.isFinite(x)&&Double.isFinite(y)&&x>=.15&&x<=.85&&y>=.1&&y<=.9&&Double.isFinite(headX)&&Double.isFinite(headY)&&Math.abs(headX)<=.6&&headY>=0&&headY<=1;
             return ok?new double[]{x,y,headX,headY}:null;
         } finally { image.close(); }
     }

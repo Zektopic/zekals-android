@@ -118,7 +118,7 @@
     "manualHint": "Usa mouse, tocco o tastiera. Cambia modalità nelle Impostazioni.",
     "dwellHint": "Mantieni il puntatore su un pulsante per sceglierlo. Spostalo prima di sceglierlo di nuovo.",
     "scanHint": "Spazio apre la riga evidenziata, poi sceglie un pulsante. Esc sospende la scansione.",
-    "gazeHint": "Calibra nelle Impostazioni prima di scegliere con gli occhi.",
+    "gazeHint": "Il puntatore segue la testa. Calibra nelle impostazioni perché segua anche lo sguardo.",
     "calibrated": "Calibrazione salvata per questa finestra. Prova prima le frasi grandi.",
     "needCamera": "Avvia la fotocamera prima della calibrazione.",
     "lookTarget": "Guarda il bersaglio senza muoverti",

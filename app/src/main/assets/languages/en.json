@@ -110,7 +110,7 @@
     "manualHint": "Use a mouse, touch, or keyboard. Change access mode in Settings.",
     "dwellHint": "Hold the pointer over a button to choose it. Move away before choosing again.",
     "scanHint": "Press Space to open the highlighted row, then to choose a button. Escape pauses scanning.",
-    "gazeHint": "Calibrate in Settings before choosing buttons with your eyes.",
+    "gazeHint": "The pointer follows your head. Calibrate in Settings so it follows your eyes too.",
     "calibrated": "Calibration saved for this window. Try the large phrase buttons first.",
     "needCamera": "Start the camera before calibration.",
     "lookTarget": "Look at the target and hold still",

@@ -125,7 +125,7 @@
     "manualHint": "Utilisez une souris, le tactile ou le clavier. Changez de mode dans Réglages.",
     "dwellHint": "Maintenez le pointeur sur un bouton pour le choisir. Éloignez-le avant de recommencer.",
     "scanHint": "Espace ouvre la rangée surlignée, puis choisit un bouton. Échap suspend le balayage.",
-    "gazeHint": "Calibrez le regard dans Réglages avant de choisir les boutons.",
+    "gazeHint": "Le pointeur suit votre tête. Calibrez dans les réglages pour qu’il suive aussi votre regard.",
     "calibrated": "Calibration enregistrée pour cette fenêtre. Essayez d’abord les grandes phrases.",
     "needCamera": "Démarrez la caméra avant de calibrer.",
     "lookTarget": "Regardez la cible sans bouger",

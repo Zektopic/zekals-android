@@ -79,6 +79,12 @@ public final class MainActivity extends Activity {
     private boolean calibrationPositioning;
     private long calibrationTracked, calibrationMissing, calibrationTick;
     private float[] easedGaze;
+    /** Head pose held when the face was first found; the uncalibrated pointer moves relative to it. */
+    private final double[] neutralHead = new double[2];
+    private int neutralSamples, restarts;
+    private long restartWindow;
+    private static final double HEAD_GAIN_X = 5, HEAD_GAIN_Y = 6;
+    private final Runnable restartCamera = this::restartCameraIfWanted;
     private Button pauseButton, modeButton, selected;
     private List<Button> scanGroup, scanItems;
     private TextToSpeech tts;
@@ -346,19 +352,37 @@ public final class MainActivity extends Activity {
     private void deliverGazeSample() {
         CameraSample sample=pendingCameraSample;if(sample==null||sample.generation!=cameraGeneration||!running)return;
         long now=SystemClock.uptimeMillis();boolean valid=sample.point!=null&&now-sample.captured<=500;
-        lastGazeTime=valid?sample.captured:0;
+        long previousGaze=lastGazeTime;lastGazeTime=valid?sample.captured:0;
         // Calibration learns from the raw eye features; the pointer is smoothed after mapping,
         // because the native filter only accepts screen fractions in [0,1].
         if(valid&&calibration!=null&&calibration.dimensions()!=sample.point.length){
             // A calibration from another tracker version uses different features.
             Log.i(TAG,"Stored calibration expects "+calibration.dimensions()+" features, tracker gives "+sample.point.length);calibration=null;preferences.edit().remove("calibration").apply();
         }
-        if(valid&&calibration!=null){double[] mapped=calibration.map(sample.point);NativeCore.smooth(gazeState,mapped[0],mapped[1],sample.captured,120,true);}
+        // Re-centre the head pointer when the face returns after a gap (the user may have moved).
+        if(valid&&sample.captured-previousGaze>3000)neutralSamples=0;
+        double[] mapped=!valid?null:calibration!=null?calibration.map(sample.point):headPointer(sample.point);
+        if(mapped!=null)NativeCore.smooth(gazeState,mapped[0],mapped[1],sample.captured,120,true);
         else NativeCore.smooth(gazeState,0,0,sample.captured,120,false);
         if(!valid){if(mode==3)resetDwell();cameraText(t("cameraNoFace","No face detected")+" · "+sample.provider);return;}
         if(calibrationIndex>=0&&!calibrationPositioning&&calibrationTracked>=SETTLE_MS)calibrationPoints.add(sample.point.clone());
         cameraText(t("cameraTracking","Eye tracking on")+" · "+sample.provider);
     }
+    /**
+     * Before calibration the pointer follows head turns from the pose held when the face was first
+     * found, so the user sees it move straight away. Custom ONNX models already give screen fractions.
+     */
+    private double[] headPointer(double[] features){
+        if(features.length<4)return new double[]{Math.max(0,Math.min(1,features[0])),Math.max(0,Math.min(1,features[1]))};
+        if(neutralSamples<10){
+            if(neutralSamples==0){neutralHead[0]=0;neutralHead[1]=0;}
+            neutralHead[0]+=features[2]/10;neutralHead[1]+=features[3]/10;
+            if(++neutralSamples==10)Log.i(TAG,String.format(java.util.Locale.ROOT,"Head pointer centred at (%.3f, %.3f)",neutralHead[0],neutralHead[1]));
+            return null;
+        }
+        return new double[]{Math.max(0,Math.min(1,.5+(features[2]-neutralHead[0])*HEAD_GAIN_X)),Math.max(0,Math.min(1,.5+(features[3]-neutralHead[1])*HEAD_GAIN_Y))};
+    }
+    private void restartCameraIfWanted(){if(running&&cameraWanted&&cameraTracker==null&&checkSelfPermission(Manifest.permission.CAMERA)==PackageManager.PERMISSION_GRANTED)startCamera();}
     private void startCamera(){
         stopCamera(false);long generation=++cameraGeneration;cameraRotation=displayRotation();
         // A gaze-only user cannot wake the screen, so it stays on while the camera runs.
@@ -377,12 +401,15 @@ public final class MainActivity extends Activity {
                 if(generation!=cameraGeneration)return;
                 // The tracker already closed itself; forget it so the next press retries.
                 stopCamera(false);notice(t(key,fallback));
+                // A crashed camera service usually comes back; retry a few times so a gaze-only user is not stranded.
+                long now=SystemClock.uptimeMillis();if(now-restartWindow>60000){restartWindow=now;restarts=0;}
+                if(cameraWanted&&running&&(key.equals("cameraFailed")||key.equals("trackingLost"))&&restarts<3){restarts++;handler.postDelayed(restartCamera,2000);}
             });}
         });
     }
     /** Lifecycle stops keep the calibration; a user stop or provider change discards it. */
     private void stopCamera(boolean discardCalibration){
-        cameraGeneration++;handler.removeCallbacks(deliverGaze);pendingCameraSample=null;if(cameraTracker!=null){cameraTracker.close();cameraTracker=null;}
+        cameraGeneration++;handler.removeCallbacks(deliverGaze);handler.removeCallbacks(restartCamera);pendingCameraSample=null;neutralSamples=0;if(cameraTracker!=null){cameraTracker.close();cameraTracker=null;}
         lastGazeTime=0;gazeState[3]=0;cancelCalibration();resetDwell();
         if(discardCalibration){calibration=null;preferences.edit().remove("calibration").apply();}
         getWindow().clearFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON);
@@ -572,7 +599,7 @@ public final class MainActivity extends Activity {
         if(calibrationIndex>=0)calibrationStep(now);
         if(mode==2 && !paused && calibrationIndex<0 && now-lastScan>=scanMillis){scanStep();lastScan=now;}
         // The pointer glides between the 5-10 Hz camera samples; targeting uses the same eased point.
-        float[] looked=mode==3?gazePoint(now):null;
+        float[] looked=cameraTracker!=null?gazePoint(now):null;
         if(looked==null)easedGaze=null;else if(easedGaze==null)easedGaze=looked;else{easedGaze[0]+=(looked[0]-easedGaze[0])*.35f;easedGaze[1]+=(looked[1]-easedGaze[1])*.35f;}
         float[] gaze=easedGaze;
         if((mode==1 || mode==3) && calibrationIndex<0){
@@ -587,16 +614,16 @@ public final class MainActivity extends Activity {
         }
         int progress=dwellState[0]<0?0:(int)Math.min(100,Math.max(0,(now-dwellState[1])*100/dwellMillis));
         if(selectionProgress!=null)selectionProgress.setProgress(progress);
-        if(pointer!=null)pointer.show(gaze,progress/100f);
+        if(pointer!=null)pointer.show(gaze,mode==3?progress/100f:0);
         handler.postDelayed(this,mode==0&&calibrationIndex<0?250:50);
     }};
     private int displayRotation(){return getWindowManager().getDefaultDisplay().getRotation();}
     /** Where the user is looking, in surface pixels, or null when uncalibrated or not tracking. */
     private float[] gazePoint(long now){
-        if(calibration==null&&now-lastGazeTime<=500&&calibrationIndex<0&&!gazeHinted){notice(t("gazeHint","Calibrate in Settings before choosing buttons with your eyes."));gazeHinted=true;}
-        if(calibration==null||gazeState[3]==0||now-lastGazeTime>500||calibrationIndex>=0)return null;
+        if(gazeState[3]==0||now-lastGazeTime>500||calibrationIndex>=0)return null;
+        if(calibration==null&&!gazeHinted){notice(t("gazeHint","The pointer follows your head. Calibrate in Settings so it follows your eyes too."));gazeHinted=true;}
         // Calibration maps this viewport from this camera position; keep it for when they return.
-        if(surface.getWidth()!=calibrationWidth||surface.getHeight()!=calibrationHeight||displayRotation()!=calibrationRotation){resetDwell();if(!sizeWarned)notice(t("recalibrate","The screen size changed. Calibrate again."));sizeWarned=true;return null;}
+        if(calibration!=null&&surface.getWidth()!=calibrationWidth||surface.getHeight()!=calibrationHeight||displayRotation()!=calibrationRotation){resetDwell();if(!sizeWarned)notice(t("recalibrate","The screen size changed. Calibrate again."));sizeWarned=true;return null;}
         sizeWarned=false;
         // gazeState already holds the calibrated, smoothed screen fraction.
         return new float[]{(float)(gazeState[0]*surface.getWidth()),(float)(gazeState[1]*surface.getHeight())};
