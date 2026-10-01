@@ -36,7 +36,7 @@ jobs:
           # The action's default list includes the obsolete 'tools' package, which current
           # cmdline-tools reject ("Failed to find package 'tools'").
           packages: platform-tools
-      - uses: gradle/actions/setup-gradle@v4
+      - uses: gradle/actions/setup-gradle@v6
       - run: sdkmanager 'platforms;android-35' 'build-tools;35.0.0' 'ndk;28.2.13676358' 'cmake;3.22.1'
       - if: matrix.flavor == 'Vision'
         run: python3 scripts/download_model.py
