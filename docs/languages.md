@@ -1,10 +1,14 @@
 # Language and voice expansion
 
 Packs live in `app/src/main/assets/languages/`. English, French, Simplified Chinese,
-Italian, Sinhala and Greek use the desktop schema version 1. The first five contain
-complete desktop UI keys; Greek retains some English fallback. Android adds
-`cameraControl`, `inference` and `cancelCalibration`. Translations require native
-speaker/user review before being marked reviewed.
+Italian, Sinhala and Greek use the desktop schema version 1 and contain every UI
+key. Android adds camera, calibration, scanning and voice keys (for example
+`cameraControl`, `cameraNoFace`, `inferenceRequest`, `voiceSettings`); `{provider}`
+is a placeholder that every translation must keep. The validator rejects packs with
+missing keys, lost placeholders or strings left identical to English, apart from a
+short allowlist of words that are spelled the same (`standard` in French and
+Italian). The Android-specific strings and the Greek UI were machine-drafted in
+October 2026 and require native speaker/user review before being marked reviewed.
 
 Copy the example in `examples/language-pack/es.json`, change its identity/locale,
 translate UI strings and phrases, and define keyboard rows and extra pages. The
@@ -16,8 +20,9 @@ not require Java edits. Do not place markup or executable actions inside keys.
 Use the system IME for unrestricted Chinese entry. The virtual board deliberately
 contains a small set of common Hanzi. Sinhala combining marks show a dotted-circle
 label while inserting only the actual mark; Join letters inserts a zero-width
-joiner. Deletion uses Android ICU grapheme boundaries, which must be checked on the
-minimum supported OS and with native conjunct examples.
+joiner. Delete removes a combining mark or joiner on its own and otherwise uses
+Android ICU grapheme boundaries; check both on the minimum supported OS and with
+native conjunct examples.
 
 The pack's locale selects matching installed Android voices. Piper metadata is
 shared documentation for the desktop and is not a mobile neural model. Natural
