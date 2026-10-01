@@ -1,0 +1,44 @@
+name: Android and native checks
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+permissions:
+  contents: read
+concurrency:
+  group: android-${{ github.ref }}
+  cancel-in-progress: true
+jobs:
+  native:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+      - run: cmake -S . -B build/host -DZEKALS_SANITIZERS=ON && cmake --build build/host -j2 && ctest --test-dir build/host --output-on-failure
+      - run: bash scripts/check-calibration.sh && python3 scripts/validate_packs.py
+  android:
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        flavor: [Lite, Vision]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+      - uses: android-actions/setup-android@v3
+      - uses: gradle/actions/setup-gradle@v4
+      - run: sdkmanager 'platforms;android-35' 'build-tools;35.0.0' 'ndk;28.0.13004108' 'cmake;3.22.1'
+      - if: matrix.flavor == 'Vision'
+        run: python3 scripts/download_model.py
+      - run: ./gradlew :app:assemble${{ matrix.flavor }}Debug :app:lint${{ matrix.flavor }}Debug --no-daemon
+      - uses: actions/upload-artifact@v4
+        with:
+          name: zekals-${{ matrix.flavor }}-debug
+          path: app/build/outputs/apk/**/*.apk
+          retention-days: 14
