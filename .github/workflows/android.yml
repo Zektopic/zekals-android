@@ -11,9 +11,11 @@ concurrency:
   cancel-in-progress: true
 jobs:
   native:
-    runs-on: ubuntu-latest
+    runs-on: [self-hosted, manupa-hnx]
     steps:
       - uses: actions/checkout@v7
+      - name: Configure Git safe directory
+        run: git config --global --add safe.directory '*'
       - uses: actions/setup-java@v6
         with:
           distribution: temurin
@@ -21,12 +23,14 @@ jobs:
       - run: cmake -S . -B build/host -DZEKALS_SANITIZERS=ON && cmake --build build/host -j2 && ctest --test-dir build/host --output-on-failure
       - run: bash scripts/check-calibration.sh && python3 scripts/validate_packs.py
   android:
-    runs-on: ubuntu-latest
+    runs-on: [self-hosted, manupa-hnx]
     strategy:
       matrix:
         flavor: [Lite, Vision]
     steps:
       - uses: actions/checkout@v7
+      - name: Configure Git safe directory
+        run: git config --global --add safe.directory '*'
       - uses: actions/setup-java@v6
         with:
           distribution: temurin
