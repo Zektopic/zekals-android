@@ -33,7 +33,7 @@ android {
 dependencies {
     // tasks-core always constructs a datatransport (Clearcut) usage logger; FaceLandmarker fails with
     // NoClassDefFoundError if that library is excluded. INTERNET is removed, so it cannot upload.
-    visionImplementation 'com.google.mediapipe:tasks-vision:1.0.0'
+    visionImplementation 'com.google.mediapipe:tasks-vision:1.1.1'
     visionImplementation 'com.microsoft.onnxruntime:onnxruntime-android:1.31.0'
 }
 
